@@ -3,9 +3,9 @@
 > **Share and import complete DeepSeek Harness setups as one inspectable Crate.**  
 > **把一整套 DeepSeek Harness 环境打包成一个可检查、可导入的 Crate。**
 
-**DSH Crate** is part of **DSH Crate**. It turns a configured DeepSeek Harness Profile into a portable `.dshcrate` that can be inspected before Import, reconstructed as another Profile, and verified after Import.
+**DSH Crate** packages the DeepSeek Harness setup you already made work into a single `.dshcrate` file: move it to another computer, share it, or bring it back after a reinstall - without rebuilding everything by hand, and with a risk check before anything changes.
 
-**DSH Crate** 属于 **DSH Crate**。它可以把已经配置好的 DeepSeek Harness Profile 导出为 `.dshcrate`，在导入前检查内容和风险，再重建为另一个 Profile，并在导入后执行 Verify。
+**DSH Crate** 把你已经调好的 DeepSeek Harness 环境打包成一个 `.dshcrate` 文件：换电脑、分享给别人、或者环境坏了要重装时，不用再一步步手动配置；导入前还能先检查风险。
 
 [English](#english) · [中文](#中文)
 
@@ -105,6 +105,17 @@ The current Preview can:
 - download exported Crates
 - delete Profiles that are not currently running
 - switch Profiles and restart after explicit confirmation
+
+## Quick troubleshooting with DSH Crate
+
+When a DSH environment stops working:
+
+1. Open **Settings → DSH Crate** and **Export** the current Profile as a `.dshcrate`.
+2. Run **Inspect / Preflight** on the Crate - it lists `BLOCKER`, `WARNING`, and `INFO` problems and never modifies your environment.
+3. **Import** the Crate into a fresh Profile (do not overwrite the original) and run **Verify**.
+4. If a step fails, copy the full diagnostic JSON and attach it to an issue or troubleshooting tool.
+
+Inspect and Preflight are read-only; nothing changes until you explicitly confirm an Import.
 
 ## Share a working setup
 
@@ -515,6 +526,17 @@ DSH Crate 是 DeepSeek Harness 的扩展，不负责安装或替代 DSH runtime�
 - 下载导出的 Crate
 - 删除当前未运行的 Profile
 - 明确确认后切换并重启 Profile
+
+## 用 DSH Crate 排障（简版）
+
+DSH 环境出问题时，不需要立刻删掉重装：
+
+1. 打开 **Settings → DSH Crate**，把当前 Profile **Export** 成 `.dshcrate`；
+2. 对 Crate 执行 **Inspect / Preflight**，它会列出 `BLOCKER`、`WARNING`、`INFO`，全程只读，不会改动你的环境；
+3. **Import** 到一个全新 Profile（不要覆盖原来的），再执行 **Verify**；
+4. 哪一步失败，就把完整诊断 JSON 复制出来，发给 Issue 或排查工具。
+
+Inspect 和 Preflight 只读；只有你明确确认 Import 后才会真正改动。
 
 ## 分享一套已经调好的环境
 
