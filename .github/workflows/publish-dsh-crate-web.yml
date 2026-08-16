@@ -1,0 +1,125 @@
+name: Publish DSH Crate Web to npm
+
+on:
+  push:
+    tags:
+      - "dsh-crate-web-v*"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to npm using Trusted Publishing"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  validate-package:
+    name: Validate npm package
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Validate package metadata and release tag
+        env:
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+
+          if (pkg.name !== 'dsh-crate-web') {
+            throw new Error(`Unexpected package name: ${pkg.name}`)
+          }
+          if (pkg.publishConfig?.access !== 'public') {
+            throw new Error('The package must declare publishConfig.access=public')
+          }
+
+          if (process.env.RELEASE_REF_TYPE === 'tag') {
+            const prefix = 'dsh-crate-web-v'
+            const tag = process.env.RELEASE_REF_NAME
+            if (!tag.startsWith(prefix) || pkg.version !== tag.slice(prefix.length)) {
+              throw new Error(`Package version ${pkg.version} does not match tag ${tag}`)
+            }
+          }
+          NODE
+
+      - name: Inspect packed file list
+        run: npm pack --dry-run --json > pack-manifest.json
+
+      - name: Reject incomplete or unsafe package contents
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+          const report = JSON.parse(fs.readFileSync('pack-manifest.json', 'utf8'))[0]
+          const files = report.files.map((entry) => entry.path)
+          const required = [
+            'package.json',
+            'cordis.patch.yml',
+            'lib/index.js',
+            'lib/client.js',
+            'core/dsh_pack/importer.py',
+            'runtime/python/python.exe',
+          ]
+          const missing = required.filter((file) => !files.includes(file))
+          const forbidden = files.filter((file) =>
+            /(^|\/)(node_modules|__pycache__)(\/|$)|\.py[co]$|(^|\/)(\.env|.*secret.*)$/i.test(file),
+          )
+
+          if (missing.length) throw new Error(`Missing package files: ${missing.join(', ')}`)
+          if (forbidden.length) throw new Error(`Forbidden package files: ${forbidden.join(', ')}`)
+          console.log(JSON.stringify({
+            package: report.id,
+            fileCount: files.length,
+            packedSize: report.size,
+          }, null, 2))
+          NODE
+
+  publish:
+    name: Publish with npm Trusted Publishing
+    needs: validate-package
+    if: >-
+      (github.event_name == 'push' && github.ref_type == 'tag') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish == true)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Stamp repository metadata for provenance
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+          pkg.repository = {
+            type: 'git',
+            url: `https://github.com/${process.env.GITHUB_REPOSITORY}.git`,
+          }
+          fs.writeFileSync('package.json', `${JSON.stringify(pkg, null, 2)}\n`)
+          NODE
+
+      - name: Publish public package with provenance
+        run: npm publish --provenance --access public
