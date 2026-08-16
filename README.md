@@ -365,6 +365,44 @@ Fresh DSH_HOME
 
 A Crate will only be described as fully frozen or offline-restorable when the corresponding restore test actually passes.
 
+### By September 30, 2026 - Scheduled snapshots and startup-failure auto recovery
+
+Make a working DSH environment recoverable without manual reconstruction.
+
+**Scheduled snapshots**
+
+- Snapshots are captured on a configurable schedule (disabled by default).
+- A snapshot describes the Profile and its reconstructible state; it never copies the entire `DSH_HOME` and never contains Secret values (only required Secret names).
+- Snapshots are read-only: they can be listed, Inspected, and Preflighted, but nothing writes into an existing snapshot.
+- Snapshots support retention-based cleanup and can be restored into a fresh Profile without touching the original.
+
+**Startup-failure auto recovery**
+
+- When DSH fails to start, offer to restore the most recent snapshot into a new Profile.
+- Recovery never overwrites the original Profile and only reports success after Verify: DSH actually boots, a new session can be created, and the configured smoke tests pass.
+- Until that verification evidence exists, the status is `FAIL` or `UNTESTED` - never assumed `PASS`.
+- Every automatic action is logged with machine-readable diagnostics for audit and bug reports.
+
+Target acceptance flow:
+
+```text
+Working DSH environment
+        ↓
+Schedule a snapshot
+        ↓
+     snapshot
+        ↓
+DSH fails to start
+        ↓
+  Auto-recovery
+        ↓
+      Verify
+        ↓
+PASS / FAIL / UNTESTED / DEGRADED
+```
+
+A recovery is only marked `PASS` when the real boot, new-session, and smoke-test run succeeds in the recovered Profile.
+
 ## Development CLI
 
 The Core currently exposes a development CLI:
@@ -795,6 +833,44 @@ Fresh DSH_HOME
 ```
 
 只有真正通过对应恢复测试的 Crate，才会被标记为 fully frozen / offline-restorable。
+
+### 2026 年 9 月 30 日前 — 定时快照与启动失败自动恢复
+
+让已经调好的 DSH 环境出问题时也能快速恢复，不需要手动重建。
+
+**定时快照**
+
+- 按可配置的间隔自动生成轻量快照（默认关闭）。
+- 快照描述 Profile 及其可重建状态，不会复制整个 `DSH_HOME`，也不会包含 Secret 值（只记录 required Secret 名称）。
+- 快照是只读的：可以列出、Inspect、Preflight，但不会写入已有快照。
+- 快照支持按保留策略清理，也可以恢复到全新 Profile，不影响原 Profile。
+
+**启动失败自动恢复**
+
+- DSH 启动失败时，提供用最近快照恢复到新 Profile 的选项。
+- 恢复不覆盖原 Profile；只有 Verify 通过（DSH 真正启动、能创建新会话、配置的 smoke test 真实通过）后才报告成功。
+- 在没有验证证据前，状态只能是 `FAIL` 或 `UNTESTED`，不能自行判定为 `PASS`。
+- 每次自动操作都会记录日志和机器可读诊断，便于审计和提交 Issue。
+
+目标验收流程：
+
+```text
+正在工作的 DSH 环境
+        ↓
+  定时生成快照
+        ↓
+      快照
+        ↓
+DSH 启动失败
+        ↓
+    自动恢复
+        ↓
+      Verify
+        ↓
+PASS / FAIL / UNTESTED / DEGRADED
+```
+
+只有恢复后的 Profile 真实完成启动、创建新会话和 smoke test，才能标记为 `PASS`。
 
 ## 开发环境 CLI
 
