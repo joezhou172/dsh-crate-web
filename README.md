@@ -1,11 +1,13 @@
 # DSH Crate
 
-> **Share and import complete DeepSeek Harness setups as one inspectable Crate.**  
-> **把一整套 DeepSeek Harness 环境打包成一个可检查、可导入的 Crate。**
+> Share and import complete DeepSeek Harness setups as one inspectable Crate.  
+> 分享和导入完整的 DeepSeek Harness 环境，一个可检查、可导入的 Crate。
 
-**DSH Crate** packages the DeepSeek Harness setup you already made work into a single `.dshcrate` file: move it to another computer, share it, or bring it back after a reinstall - without rebuilding everything by hand, and with a risk check before anything changes.
+![DSH Crate - 10 秒使用演示](assets/dsh-crate-demo.gif)
 
-**DSH Crate** 把你已经调好的 DeepSeek Harness 环境打包成一个 `.dshcrate` 文件：换电脑、分享给别人、或者环境坏了要重装时，不用再一步步手动配置；导入前还能先检查风险。
+```bash
+dsh plugin --profile web add dsh-crate-web
+```
 
 [English](#english) · [中文](#中文)
 
