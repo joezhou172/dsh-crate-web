@@ -3,8 +3,6 @@
 > Share and import complete DeepSeek Harness setups as one inspectable Crate.  
 > 分享和导入完整的 DeepSeek Harness 环境，一个可检查、可导入的 Crate。
 
-![DSH Crate - 10 秒使用演示](assets/dsh-crate-demo.gif)
-
 ```bash
 dsh plugin --profile web add dsh-crate-web
 ```
