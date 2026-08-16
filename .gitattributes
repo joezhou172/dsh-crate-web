@@ -1,0 +1,10 @@
+* text=auto
+*.png binary
+*.jpg binary
+*.tgz binary
+*.zip binary
+*.pyd binary
+*.dll binary
+*.exe binary
+*.pyc binary
+*.pyo binary

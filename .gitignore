@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Secrets / env
+.env
+.env.*
+!.env.example
+
+# Node / npm build artifacts
+node_modules/
+*.tgz
+*.log
+
+# Editor backups / OS
+*.bak*
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
