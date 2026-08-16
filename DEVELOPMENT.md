@@ -1,7 +1,6 @@
 # DSH Crate Development Plan / 开发计划
 
-**Product / 产品：DSH Crate**  
-**Project family / 项目族：DSH Crate**
+**Product / 产品：DSH Crate**
 
 [English](#english) · [中文](#中文)
 
