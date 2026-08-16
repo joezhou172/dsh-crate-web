@@ -1,0 +1,11 @@
+# Add this Bundle after dsh-web-app. The host half exposes the local Core CLI
+# bridge and its dsh.client manifest adds the Settings page to the Web roster.
+- insert:
+    - id: dsh-crate-web
+      name: 'dsh-crate-web'
+      inject: [webServer]
+# Replace the official read-only plugin-list tab: DSH Crate registers the same
+# `settings.plugins.tab` id (`all`) with a collapsible official/user inventory.
+# The data host row `plugin-inventory` is left enabled.
+- id: ui-settings-plugin-inventory
+  disabled: true

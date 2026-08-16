@@ -1,0 +1,73 @@
+{
+  "name": "dsh-crate-web",
+  "description": "DSH Web Settings surface for DSH Crate export, import, inspect, and history",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/*.d.ts",
+    "restart-helper.mjs",
+    "cordis.patch.yml",
+    "core/dsh_pack/**/*.py",
+    "runtime/python"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "bundle": "node scripts/vendor-core.mjs && node scripts/prepare-runtime.mjs && tsdown"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.0",
+    "@deepseek-ai/dsh-client-locale": "*",
+    "@deepseek-ai/dsh-client-runtime": "*",
+    "@deepseek-ai/dsh-client-ui-settings": "*",
+    "@deepseek-ai/dsh-client-ui-slots": "*",
+    "@deepseek-ai/dsh-host-webserver": "*",
+    "react": "^18.2.0"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "crate",
+    "pack",
+    "profile",
+    "export",
+    "import",
+    "backup",
+    "restore",
+    "plugin"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joezhou172/dsh-crate-web.git"
+  }
+}

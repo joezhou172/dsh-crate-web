@@ -1,0 +1,7 @@
+**/__pycache__/
+**/*.py[cod]
+core/dsh_pack/__pycache__/
+core/dsh_pack/**/*.pyc
+core/dsh_pack/**/*.pyo
+*.log
+.DS_Store
