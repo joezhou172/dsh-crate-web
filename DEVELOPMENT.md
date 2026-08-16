@@ -218,6 +218,53 @@ At minimum:
 
 ---
 
+## By August 23, 2026 — In-Profile management
+
+### Goal
+
+Manage what is inside the current DSH Profile directly, without leaving DSH or rebuilding the environment by hand. This is in-Profile management for the Profile you are already working with, not a second general-purpose Profile manager.
+
+### Phase 1 — plugin management (by August 19)
+
+- List plugins installed in the current Profile: resolved version, Bundle status, runtime source.
+- Add, remove, enable, or disable a plugin through an explicit review step that shows the planned change.
+- Show version intent clearly: requested specifier, resolved version, runtime version.
+- A change succeeds only when the Profile boots, a new Session can be created, and the configured smoke tests pass. Otherwise the status is `FAIL` or `UNTESTED`.
+- The original Profile is never overwritten without explicit confirmation; changes are inspectable before they apply.
+
+### Phase 2 — all in-Profile content management (by August 23)
+
+Extend the same review-then-apply pattern to all Profile content:
+
+```text
+Profile configuration
++ Bundles
++ plugin configuration
++ plugin-owned workflows
++ selected Conversations / user data
++ required Secret names (values stay local)
++ environment inventory
++ integrity evidence
+```
+
+### Main acceptance gate
+
+```text
+Current Profile
+        ↓
+  List / change
+        ↓
+   Review step
+        ↓
+      Apply
+        ↓
+      Verify
+        ↓
+PASS / FAIL / UNTESTED / DEGRADED
+```
+
+No content is reported as managed unless the real Verify step passed.
+
 ## By September 15, 2026 — Full Configuration Freeze
 
 ### Goal
@@ -664,6 +711,53 @@ Conversation 和用户数据必须由用户明确选择，并且分享前可以�
 7. 导出清单可以明确告诉用户哪些内容被包含、排除或尚不支持。
 
 ---
+
+## 2026 年 8 月 23 日前 — Profile 内管理
+
+### 目标
+
+直接管理当前 DSH Profile 里的内容，不用离开 DSH，也不用手动重建环境。这是对正在使用的 Profile 进行管理，不是另一个通用 Profile 管理器。
+
+### 第一阶段 — 插件管理（8 月 19 日前）
+
+- 列出当前 Profile 已安装插件：解析版本、Bundle 状态、runtime 来源。
+- 新增 / 移除 / 启用 / 禁用插件时，先经过一个明确展示变更内容的确认步骤。
+- 明确展示版本意图：请求的 specifier、解析版本、runtime 版本。
+- 只有 Profile 真正启动、能创建新会话、配置的 smoke test 真实通过，才报告成功；否则状态只能是 `FAIL` 或 `UNTESTED`。
+- 没有明确确认前不覆盖原 Profile；变更在应用前可检查。
+
+### 第二阶段 — Profile 内全部内容管理（8 月 23 日前）
+
+把同样的“先确认再应用”流程扩展到 Profile 内所有内容：
+
+```text
+Profile 配置
++ Bundle
++ 插件配置
++ 插件内工作流
++ 选定的 Conversation / 用户数据
++ required Secret 名称（值保留在本机）
++ 环境清单
++ 完整性证据
+```
+
+### 核心 Gate
+
+```text
+当前 Profile
+        ↓
+ 列出 / 修改
+        ↓
+   确认步骤
+        ↓
+     应用
+        ↓
+     Verify
+        ↓
+PASS / FAIL / UNTESTED / DEGRADED
+```
+
+除非真实 Verify 通过，否则不声称任何内容已被管理。
 
 ## 2026 年 9 月 15 日前 — Full Configuration Freeze
 
