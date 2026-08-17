@@ -5,7 +5,7 @@
 ## 构建（本机）
 
 ```powershell
-cd C:\path\to\repo\packaging
+cd <dsh-crate-web 仓库目录>\packaging
 .\build-installer.ps1
 ```
 
