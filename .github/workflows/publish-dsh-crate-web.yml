@@ -90,9 +90,54 @@ jobs:
           }, null, 2))
           NODE
 
+  validate-skill:
+    name: Validate versioned Troubleshooting Skill
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate skill reference is current
+        run: |
+          python scripts/generate-skill-reference.py
+          git diff --exit-code -- skills/
+
+      - name: Validate version alignment
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+          const match = fs.readFileSync('core/dsh_pack/_version.py', 'utf8').match(/__version__\s*=\s*["']([^"']+)["']/)
+          if (!match) throw new Error('core/dsh_pack/_version.py has no __version__')
+          if (pkg.version !== match[1]) {
+            throw new Error(`package.json version ${pkg.version} != core/dsh_pack/_version.py ${match[1]}`)
+          }
+          const compat = JSON.parse(fs.readFileSync('skills/dsh-crate-troubleshooting/compatibility.json', 'utf8'))
+          if (compat.skillVersion !== pkg.version) {
+            throw new Error(`compatibility.json skillVersion ${compat.skillVersion} != package.json version ${pkg.version}`)
+          }
+          console.log(`versions aligned: ${pkg.version}`)
+          NODE
+
+      - name: Run Skill test set T1-T16
+        run: python skills/dsh-crate-troubleshooting/tests/run_tests.py
+
   publish:
     name: Publish with npm Trusted Publishing
-    needs: validate-package
+    needs: [validate-package, validate-skill]
     if: >-
       (github.event_name == 'push' && github.ref_type == 'tag') ||
       (github.event_name == 'workflow_dispatch' && inputs.publish == true)

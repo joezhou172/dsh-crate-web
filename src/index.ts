@@ -1,7 +1,7 @@
 /** Host half: a small local HTTP bridge to the installed dsh-crate Core CLI. */
 
 import { randomUUID } from 'node:crypto'
-import { createReadStream } from 'node:fs'
+import { createReadStream, readFileSync } from 'node:fs'
 import { access, cp, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { platform as osPlatform } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
@@ -19,6 +19,32 @@ const SAFE_NAME = /^[A-Za-z0-9._-]+$/
 const SAFE_PLUGIN_NAME = /^@?[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)?$/
 const SAFE_OPERATION_ID = /^[0-9a-f-]{36}$/i
 const CRATE_PACKAGE_NAME = 'dsh-crate-web'
+const DIAGNOSTIC_PRODUCER = 'dsh-crate'
+const DIAGNOSTIC_SCHEMA_VERSION = 1
+
+function crateVersion(): string {
+  try {
+    const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)))
+    const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')) as JsonObject
+    if (typeof manifest.version === 'string' && manifest.version !== '') return manifest.version
+  } catch {
+    // The package manifest is unavailable; report an empty version rather than
+    // inventing one. createProfile reports CRATE_VERSION_MISSING in this case.
+  }
+  return ''
+}
+const CRATE_VERSION = crateVersion()
+
+function diagnosticEnvelope(operation: string, status: string): JsonObject {
+  const envelope: JsonObject = {
+    producer: DIAGNOSTIC_PRODUCER,
+    crateVersion: CRATE_VERSION,
+    diagnosticSchemaVersion: DIAGNOSTIC_SCHEMA_VERSION,
+    operation,
+    status,
+  }
+  return envelope
+}
 
 type JsonObject = Record<string, unknown>
 type Action = 'profiles' | 'history' | 'inspect' | 'export' | 'import' | 'delete-profile' | 'create-profile' | 'switch-profile' | 'switch-status' | 'verify'
@@ -251,9 +277,9 @@ function isObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
-function coreDiagnostic(result: unknown, fallback: string): JsonObject {
+function coreDiagnostic(result: unknown, fallback: string, operation: string): JsonObject {
   if (isObject(result) && isObject(result.error)) return result.error
-  return { message: fallback }
+  return { message: fallback, ...diagnosticEnvelope(operation, 'FAIL') }
 }
 
 function runtimeCoreArgs(): string[] {
@@ -294,7 +320,7 @@ function currentRuntime(home: string): JsonObject {
   }
 }
 
-function operationDiagnostic(code: string, stage: string, item: string, message: string, impact: string, suggestedNextStep: string): JsonObject {
+function operationDiagnostic(code: string, stage: string, item: string, message: string, impact: string, suggestedNextStep: string, operation: string): JsonObject {
   return {
     code,
     stage,
@@ -312,6 +338,7 @@ function operationDiagnostic(code: string, stage: string, item: string, message:
       'retry after correcting the reported item',
     ],
     message,
+    ...diagnosticEnvelope(operation, 'FAIL'),
   }
 }
 
@@ -695,7 +722,7 @@ async function readInstalledVersion(packageRoot: string): Promise<string | undef
 async function createProfile(home: string, body: JsonObject, workspace: { root: string; exports: string; work: string; history: string }): Promise<JsonObject> {
   const profileName = safeName(body.profileName, 'profileName')
   if (profileName === '.' || profileName === '..' || profileName === 'node_modules') {
-    const error = operationDiagnostic('PROFILE_NAME_RESERVED', 'planning', profileName, `Profile name is reserved: ${profileName}`, 'The requested Profile was not created.', 'Choose another Profile name and retry.')
+    const error = operationDiagnostic('PROFILE_NAME_RESERVED', 'planning', profileName, `Profile name is reserved: ${profileName}`, 'The requested Profile was not created.', 'Choose another Profile name and retry.', 'create-profile')
     return { status: 'failed', command: 'create-profile', exitCode: 2, error }
   }
   const profilesRoot = join(home, 'profiles')
@@ -704,7 +731,7 @@ async function createProfile(home: string, body: JsonObject, workspace: { root: 
   if (!profileRelative || profileRelative.startsWith('..') || profileRelative.includes('\\')) throw new Error('profileName escaped DSH_HOME')
   try {
     await access(join(profileDir, 'package.json'))
-    const error = operationDiagnostic('PROFILE_EXISTS', 'planning', profileName, `Profile already exists: ${profileName}`, 'No Profile was created or modified.', 'Choose a different Profile name, or delete the existing Profile first.')
+    const error = operationDiagnostic('PROFILE_EXISTS', 'planning', profileName, `Profile already exists: ${profileName}`, 'No Profile was created or modified.', 'Choose a different Profile name, or delete the existing Profile first.', 'create-profile')
     return { status: 'failed', command: 'create-profile', exitCode: 2, error }
   } catch {
     // Expected: the Profile does not exist yet.
@@ -714,14 +741,14 @@ async function createProfile(home: string, body: JsonObject, workspace: { root: 
   const officialWeb = await readInstalledVersion(join(profilesRoot, 'node_modules', '@deepseek-ai', 'dsh-web-app'))
   if (officialBase === undefined || officialWeb === undefined) {
     const missing = officialBase === undefined ? '@deepseek-ai/dsh-base' : '@deepseek-ai/dsh-web-app'
-    const error = operationDiagnostic('OFFICIAL_BUNDLE_MISSING', 'planning', profileName, `cannot resolve official bundle version: ${missing}`, 'The requested Profile was not created.', `Install the official DSH bundles into this DSH_HOME first (${profilesRoot}/node_modules), then retry.`)
+    const error = operationDiagnostic('OFFICIAL_BUNDLE_MISSING', 'planning', profileName, `cannot resolve official bundle version: ${missing}`, 'The requested Profile was not created.', `Install the official DSH bundles into this DSH_HOME first (${profilesRoot}/node_modules), then retry.`, 'create-profile')
     return { status: 'failed', command: 'create-profile', exitCode: 2, error }
   }
   const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)))
   const sourceManifest = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')) as JsonObject
   const crateVersion = typeof sourceManifest.version === 'string' ? sourceManifest.version : undefined
   if (crateVersion === undefined) {
-    const error = operationDiagnostic('CRATE_VERSION_MISSING', 'planning', profileName, 'DSH Crate package version is missing', 'The requested Profile was not created.', 'Repair the DSH Crate installation and retry.')
+    const error = operationDiagnostic('CRATE_VERSION_MISSING', 'planning', profileName, 'DSH Crate package version is missing', 'The requested Profile was not created.', 'Repair the DSH Crate installation and retry.', 'create-profile')
     return { status: 'failed', command: 'create-profile', exitCode: 2, error }
   }
 
@@ -797,7 +824,7 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: JsonObj
         : result
       return { status: 'ok', command: action, exitCode: run.code, result: enriched }
     } catch {
-      return { status: 'failed', command: action, exitCode: run.code, error: coreDiagnostic(undefined, run.stderr || run.stdout || 'dsh-crate inspect failed') }
+      return { status: 'failed', command: action, exitCode: run.code, error: coreDiagnostic(undefined, run.stderr || run.stdout || 'dsh-crate inspect failed', action) }
     }
   }
 
@@ -819,7 +846,7 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: JsonObj
     let result: unknown
     try { result = parseCore(run.stdout) } catch { result = undefined }
     if (run.code !== 0 || result === undefined) {
-      const failure = { status: 'failed', action, exitCode: run.code, error: coreDiagnostic(result, run.stderr || run.stdout || 'dsh-crate export failed'), result }
+      const failure = { status: 'failed', action, exitCode: run.code, error: coreDiagnostic(result, run.stderr || run.stdout || 'dsh-crate export failed', action), result }
       await record(workspace.history, { time: new Date().toISOString(), action, status: 'FAIL', profile: profileName, message: String(failure.error.message ?? 'dsh-crate export failed'), code: failure.error.code, stage: failure.error.stage })
       return failure
     }
@@ -838,7 +865,7 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: JsonObj
     try { result = parseCore(run.stdout) } catch { result = undefined }
     if (run.code !== 0 || result === undefined) {
       const message = run.stderr || run.stdout || 'dsh-crate import failed'
-      const failure = { status: 'failed', action, exitCode: run.code, error: coreDiagnostic(result, message), result }
+      const failure = { status: 'failed', action, exitCode: run.code, error: coreDiagnostic(result, message, action), result }
       await record(workspace.history, { time: new Date().toISOString(), action, status: 'FAIL', message: String(failure.error.message ?? message), code: failure.error.code, stage: failure.error.stage })
       return failure
     }
@@ -871,7 +898,7 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: JsonObj
     const profileName = safeName(body.profileName, 'profileName')
     const running = currentRuntime(home)
     if (running.currentProfile === profileName) {
-      const error = operationDiagnostic('ACTIVE_PROFILE', 'planning', profileName, `cannot delete the active Profile: ${profileName}`, 'The running DSH process would lose its Profile files.', 'Switch to another Profile first, then delete this Profile.')
+      const error = operationDiagnostic('ACTIVE_PROFILE', 'planning', profileName, `cannot delete the active Profile: ${profileName}`, 'The running DSH process would lose its Profile files.', 'Switch to another Profile first, then delete this Profile.', 'delete-profile')
       return { status: 'failed', command: action, exitCode: 2, error }
     }
     const args = ['delete-profile', '--dsh-home', home, '--profile', profileName, '--json']
@@ -881,7 +908,7 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: JsonObj
     try { result = parseCore(run.stdout) } catch { result = undefined }
     if (run.code !== 0 || result === undefined) {
       const message = run.stderr || run.stdout || 'dsh-crate Profile deletion failed'
-      const failure = { status: 'failed', action, exitCode: run.code, error: coreDiagnostic(result, message), result }
+      const failure = { status: 'failed', action, exitCode: run.code, error: coreDiagnostic(result, message, action), result }
       await record(workspace.history, { time: new Date().toISOString(), action, status: 'FAIL', profile: profileName, message: String(failure.error.message ?? message), code: failure.error.code, stage: failure.error.stage })
       return failure
     }
@@ -906,11 +933,11 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: JsonObj
   if (action === 'switch-profile') {
     const profileName = safeName(body.profileName, 'profileName')
     if (body.confirmSwitch !== true) {
-      return { status: 'failed', command: action, exitCode: 2, error: operationDiagnostic('SWITCH_CONFIRMATION_REQUIRED', 'planning', profileName, 'switching Profile requires explicit confirmation', 'The current DSH process was not changed.', 'Confirm the switch and retry.') }
+      return { status: 'failed', command: action, exitCode: 2, error: operationDiagnostic('SWITCH_CONFIRMATION_REQUIRED', 'planning', profileName, 'switching Profile requires explicit confirmation', 'The current DSH process was not changed.', 'Confirm the switch and retry.', 'switch-profile') }
     }
     const available = await listProfiles(home)
     if (!available.some(profile => profile.name === profileName)) {
-      return { status: 'failed', command: action, exitCode: 2, error: operationDiagnostic('PROFILE_MISSING', 'planning', profileName, `Profile does not exist: ${profileName}`, 'The current DSH process was not changed.', 'Choose an existing Profile and retry.') }
+      return { status: 'failed', command: action, exitCode: 2, error: operationDiagnostic('PROFILE_MISSING', 'planning', profileName, `Profile does not exist: ${profileName}`, 'The current DSH process was not changed.', 'Choose an existing Profile and retry.', 'switch-profile') }
     }
     const runtime = currentRuntime(home)
     const oldProfile = typeof runtime.currentProfile === 'string' ? runtime.currentProfile : undefined
@@ -927,7 +954,7 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: JsonObj
       }
     }
     if (runtime.restartConfigured !== true || typeof process.argv[1] !== 'string' || typeof runtime.port !== 'number') {
-      return { status: 'failed', command: action, exitCode: 2, error: operationDiagnostic('RESTART_NOT_CONFIGURED', 'planning', profileName, 'the current DSH launch command cannot be safely reconstructed', 'The current DSH process was not changed.', 'Start DSH with an explicit --profile and --port, or configure the DSH Crate restart launcher.') }
+      return { status: 'failed', command: action, exitCode: 2, error: operationDiagnostic('RESTART_NOT_CONFIGURED', 'planning', profileName, 'the current DSH launch command cannot be safely reconstructed', 'The current DSH process was not changed.', 'Start DSH with an explicit --profile and --port, or configure the DSH Crate restart launcher.', 'switch-profile') }
     }
     const operationId = randomUUID()
     const reportPath = join(workspace.work, `switch-${operationId}.json`)
@@ -967,7 +994,7 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: JsonObj
     let result: unknown
     try { result = parseCore(run.stdout) } catch { result = undefined }
     if (result === undefined) {
-      return { status: 'failed', action, exitCode: run.code, error: coreDiagnostic(undefined, run.stderr || run.stdout || 'dsh-crate verify failed') }
+      return { status: 'failed', action, exitCode: run.code, error: coreDiagnostic(undefined, run.stderr || run.stdout || 'dsh-crate verify failed', action) }
     }
     const resultObject = isObject(result) ? result : {}
     const status = typeof resultObject.status === 'string' ? resultObject.status : 'FAIL'

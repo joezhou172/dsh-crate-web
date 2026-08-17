@@ -18,6 +18,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from .diagnostics import decorate_issue
 from .errors import _default_checks
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -142,7 +143,7 @@ def _runtime_diagnostic(
     can_continue: bool = False,
 ) -> dict[str, Any]:
     """Structured diagnostic attached to a failed runtime VerifyStep."""
-    return {
+    result = {
         "code": code,
         "stage": stage,
         "severity": "BLOCKER",
@@ -155,6 +156,7 @@ def _runtime_diagnostic(
         "suggestedChecks": _default_checks(stage, code),
         "message": message,
     }
+    return decorate_issue(result, operation="verify", status="FAIL")
 
 
 def _normalise_observation(name: str, value: VerifyStep | Mapping[str, Any], *, required: bool) -> VerifyStep:

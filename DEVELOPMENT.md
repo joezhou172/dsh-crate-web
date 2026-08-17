@@ -114,57 +114,117 @@ git push origin dsh-crate-web-v0.1.1
 
 The workflow validates the package before running `npm publish --provenance --access public`.
 
-## August 16, 2026 — Troubleshooting Skill
+## August 17, 2026 — Version-aware Troubleshooting Skill (P7)
 
 ### Goal
 
-Ship a practical troubleshooting layer immediately after the first public Preview.
+Ship a Troubleshooting Skill that releases together with each DSH Crate
+version and only repairs diagnostics it actually understands.
 
-The Skill should consume artifacts DSH Crate already produces:
+The Skill version always equals the DSH Crate release version
+(`package.json.version` == `compatibility.json.skillVersion`).
 
-- diagnostic JSON
-- Import report
-- Verify report
-- Crate manifest
-- plugin/package identity information
-- relevant stdout/stderr
+### Versioned diagnostic protocol
 
-### Flow
+Every diagnostic now carries a versioned envelope at the top level and on each
+issue:
 
-```text
-Failure
-  ↓
-Diagnostic JSON
-  ↓
-Classify failing stage
-  ↓
-Evidence-backed hypotheses
-  ↓
-Minimal repair or next check
-  ↓
-DSH Crate Verify
+```json
+{
+  "producer": "dsh-crate",
+  "crateVersion": "0.1.1",
+  "diagnosticSchemaVersion": 1,
+  "operation": "import",
+  "operationId": "...",
+  "status": "FAIL"
+}
 ```
 
-### Rules
+Wired into all Core diagnostic producers:
 
-- do not hide FAIL by converting it into WARNING
-- do not declare repair success without Verify evidence
-- prefer minimal, local changes
-- preserve full diagnostics
-- avoid modifying unrelated Profiles
-- do not modify credentials automatically
-- do not broadly rewrite the entire DSH_HOME
-- stop when evidence is insufficient instead of inventing a repair
+- `PackImportError.as_dict()` -> `operation=import`
+- Preflight `Finding.as_dict()` -> `operation=inspect`
+- Verify `_runtime_diagnostic()` -> `operation=verify`
+- user CLI `_envelope()` (operation-level reports)
+- Web `operationDiagnostic` / `coreDiagnostic` (JS side)
+
+### Single source of truth
+
+`core/dsh_pack/diagnostics.py` is the code registry:
+
+- 76 diagnostic codes, 16 stages
+- each code: stage, severity, summary, expected, impact, canContinue,
+  suggestedChecks, repair level (L0-L3), write scope, verifyAfter
+- unknown codes classify as `known=false`, `repairLevel=L3`, `writeScope=none`
+
+`scripts/generate-skill-reference.py` renders the registry into:
+
+- `skills/dsh-crate-troubleshooting/reference/diagnostics.generated.md`
+- `skills/dsh-crate-troubleshooting/reference/stages.generated.md`
+
+CI (`validate-skill` job) runs the generator and fails on `git diff`.
+
+### Compatibility gate
+
+`skills/dsh-crate-troubleshooting/compatibility.json`:
+
+```json
+{
+  "skillVersion": "0.1.1",
+  "compatibility": {
+    "dshCrate": ">=0.1.0 <0.2.0",
+    "diagnosticSchema": [1]
+  }
+}
+```
+
+Result is only one of:
+
+- `FULL` — same Crate generation + supported schema; normal troubleshooting.
+- `COMPATIBLE` — older generation inside the supported range; compatibility rules.
+- `UNSUPPORTED` — out of range or unsupported schema; interpret evidence only,
+  never apply version-related automated repair.
+
+### Skill structure
+
+```text
+skills/dsh-crate-troubleshooting/
+├── SKILL.md              # stable decision rules only
+├── compatibility.json    # version contract
+├── reference/
+│   ├── diagnostics.generated.md
+│   ├── stages.generated.md
+│   └── repair-boundaries.md
+└── tests/run_tests.py    # T1-T16
+```
+
+SKILL.md fixes the 11-step flow: version gate -> identify operation -> identify
+stage -> collect evidence -> match known diagnostic -> build hypothesis ->
+select minimum action -> respect write boundary -> execute if allowed -> verify
+-> report.
+
+Repair permissions: L0 read-only, L1 safe reversible writes, L2 explicit
+confirmation required, L3 never automatic. Unknown codes and unsupported
+versions default to L3 / no write.
+
+### CI drift prevention
+
+The `validate-skill` job:
+
+1. regenerates the reference docs and fails on `git diff --exit-code -- skills/`;
+2. enforces `package.json.version == core/dsh_pack/_version.py __version__`;
+3. enforces `compatibility.json.skillVersion == package.json.version`;
+4. runs the T1-T16 skill test set.
+
+`publish` now needs both `validate-package` and `validate-skill`.
 
 ### Acceptance
 
-At least these cases should be covered:
-
-1. missing or unresolved plugin source;
-2. Bundle/composition failure;
-3. Profile preparation or Import failure;
-4. runtime start/Verify failure;
-5. one intentionally unrepairable case where the Skill stops without destructive changes.
+Version tests T1-T16 (see `tests/run_tests.py`): FULL / COMPATIBLE /
+UNSUPPORTED gates, unknown-code stop, plugin-source-missing, artifact
+integrity, bundle composition, prepare failure, runtime/Verify failure, repair
+success -> PASS, repair failure -> FAIL, confirmation-required (L2), credential
+mutation forbidden, unrepairable -> safe stop, plus real Core envelope checks.
 
 ---
 
@@ -612,55 +672,108 @@ git push origin dsh-crate-web-v0.1.1
 
 Workflow 会先验证包内容，再执行 `npm publish --provenance --access public`。
 
-## 2026 年 8 月 16 日 — Troubleshooting Skill
+## 2026 年 8 月 17 日 — 版本感知排障 Skill（P7）
 
 ### 目标
 
-在首个公开 Preview 后马上补一层实际可用的排障能力。
+让 Troubleshooting Skill 与 DSH Crate 同版本发布，只修复它真正理解的诊断。
 
-Skill 直接消费 DSH Crate 已经产生的：
+Skill 版本始终与 DSH Crate Release 版本一致（`package.json.version` == `compatibility.json.skillVersion`）。
 
-- diagnostic JSON
-- Import report
-- Verify report
-- Crate manifest
-- 插件/包身份信息
-- 相关 stdout/stderr
+### 版本化诊断协议
 
-### 流程
+每份诊断在顶层与每个 issue 都携带版本化信封：
 
-```text
-失败
- ↓
-Diagnostic JSON
- ↓
-判断失败阶段
- ↓
-基于证据提出根因假设
- ↓
-给出最小修复或下一步检查
- ↓
-DSH Crate Verify
+```json
+{
+  "producer": "dsh-crate",
+  "crateVersion": "0.1.1",
+  "diagnosticSchemaVersion": 1,
+  "operation": "import",
+  "operationId": "...",
+  "status": "FAIL"
+}
 ```
 
-### 规则
+已接入全部 Core 诊断产生点：
 
-- 不能把 FAIL 改成 WARNING 来制造“修好了”
-- 没有 Verify 证据不能宣布修复成功
-- 优先最小、本地修改
-- 保留完整诊断
-- 默认不修改无关 Profile
-- 不自动修改 Credential
-- 不大范围改写整个 DSH_HOME
-- 证据不足时应停止，而不是猜一个修复方案
+- `PackImportError.as_dict()` -> `operation=import`
+- Preflight `Finding.as_dict()` -> `operation=inspect`
+- Verify `_runtime_diagnostic()` -> `operation=verify`
+- user CLI `_envelope()`（操作级报告）
+- Web `operationDiagnostic` / `coreDiagnostic`（JS 侧）
 
-### 至少验收
+### 唯一事实源
 
-1. 插件来源缺失/无法解析；
-2. Bundle / Composition 故障；
-3. Profile 准备或 Import 故障；
-4. Runtime 启动 / Verify 故障；
-5. 一个故意不可修复案例，Skill 能停止且不做破坏性修改。
+`core/dsh_pack/diagnostics.py` 是代码注册表：
+
+- 76 个诊断码、16 个阶段
+- 每码：stage、severity、summary、expected、impact、canContinue、suggestedChecks、修复级别（L0-L3）、写范围、verifyAfter
+- 未知码归类为 `known=false`、`repairLevel=L3`、`writeScope=none`
+
+`scripts/generate-skill-reference.py` 把注册表渲染为：
+
+- `skills/dsh-crate-troubleshooting/reference/diagnostics.generated.md`
+- `skills/dsh-crate-troubleshooting/reference/stages.generated.md`
+
+CI（`validate-skill` job）先运行生成器，`git diff` 有变化即 FAIL。
+
+### 兼容门
+
+`skills/dsh-crate-troubleshooting/compatibility.json`：
+
+```json
+{
+  "skillVersion": "0.1.1",
+  "compatibility": {
+    "dshCrate": ">=0.1.0 <0.2.0",
+    "diagnosticSchema": [1]
+  }
+}
+```
+
+结果只有三种：
+
+- `FULL` — 同代 Crate + 支持 schema；正常排障。
+- `COMPATIBLE` — 支持范围内的旧代 Crate；使用兼容规则。
+- `UNSUPPORTED` — 超范围或 schema 不支持；只解读证据，绝不执行版本相关自动修复。
+
+### Skill 结构
+
+```text
+skills/dsh-crate-troubleshooting/
+├── SKILL.md              # 只放长期稳定的决策规则
+├── compatibility.json    # 版本契约
+├── reference/
+│   ├── diagnostics.generated.md
+│   ├── stages.generated.md
+│   └── repair-boundaries.md
+└── tests/run_tests.py    # T1-T16
+```
+
+SKILL.md 固定 11 步流程：版本门 -> 识别操作 -> 识别失败阶段 -> 收集证据 ->
+匹配已知诊断 -> 建立假设 -> 选择最小动作 -> 遵守写边界 -> 允许则执行 -> 验证 -> 报告。
+
+修复权限：L0 只读、L1 安全可逆写入、L2 必须显式确认、L3 永不自动。
+未知码与不支持版本默认 L3 / 不写。
+
+### CI 防漂移
+
+`validate-skill` job：
+
+1. 重新生成 reference 文档，`git diff --exit-code -- skills/` 有变化即 FAIL；
+2. 强制 `package.json.version == core/dsh_pack/_version.py __version__`；
+3. 强制 `compatibility.json.skillVersion == package.json.version`；
+4. 运行 T1-T16 Skill 测试集。
+
+`publish` 现在同时依赖 `validate-package` 与 `validate-skill`。
+
+### 验收
+
+版本测试 T1-T16（见 `tests/run_tests.py`）：FULL / COMPATIBLE / UNSUPPORTED 门、
+未知码停止、插件来源缺失、artifact 完整性、Bundle 组合、准备失败、
+runtime/Verify 失败、修复成功 -> PASS、修复失败 -> FAIL、需确认（L2）、
+Credential 禁止修改、不可修复 -> 安全停止，以及真实 Core 信封校验。
 
 ---
 

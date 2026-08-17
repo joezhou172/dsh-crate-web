@@ -1,0 +1,11 @@
+{
+  "name": "dsh-crate-troubleshooting",
+  "skillVersion": "0.1.1",
+  "compatibility": {
+    "dshCrate": ">=0.1.0 <0.2.0",
+    "diagnosticSchema": [
+      1
+    ]
+  },
+  "producer": "dsh-crate"
+}

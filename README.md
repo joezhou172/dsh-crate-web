@@ -101,6 +101,8 @@ The current Preview supports:
 - explicit-confirmation overwrite of an existing Profile
 - Verify for imported or prepared Profiles
 - complete failure diagnostics and copyable diagnostic JSON
+- versioned diagnostic envelopes (`producer`, `crateVersion`, `diagnosticSchemaVersion`, `operation`, `operationId`, `status`) on every diagnostic
+- a version-locked Troubleshooting Skill (`skills/dsh-crate-troubleshooting`) that ships with each Release and only repairs diagnostics it understands
 - operation history and Crate download
 - deletion of non-running Profiles
 - explicit-confirmation Profile switch and restart
@@ -254,7 +256,7 @@ DSH Crate focuses on **portable environment artifacts, controlled Import, migrat
 
 The near-term direction is intentionally narrow:
 
-- **Troubleshooting Skill** — consume diagnostic JSON, identify the failing stage, suggest evidence-backed minimal repairs, then Verify again.
+- **Troubleshooting Skill** — shipped since 0.1.1: version-locked with each Release, reads the versioned diagnostic envelope, classifies `FULL` / `COMPATIBLE` / `UNSUPPORTED`, applies L0-L3 repair boundaries, and only reports success after a real Verify.
 - **Broader environment portability** — add Conversation, plugin configuration, plugin-owned workflow, and other safely identifiable plugin-local data.
 - **Full Configuration Freeze** — later, preserve as much reconstructible DSH configuration as possible and report whether offline restoration is actually proven.
 

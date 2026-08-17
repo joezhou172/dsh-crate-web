@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from . import cli as core_cli
+from .diagnostics import CRATE_VERSION, DIAGNOSTIC_SCHEMA_VERSION, PRODUCER
 from .errors import PackImportError
 from .importer import ImportOptions, create_import_plan
 
@@ -115,6 +116,10 @@ def _envelope(
         if isinstance(preflight, dict) and preflight.get("status") in {"READY", "NOT_READY"}:
             status = preflight["status"]
     return {
+        "producer": PRODUCER,
+        "crateVersion": CRATE_VERSION,
+        "diagnosticSchemaVersion": DIAGNOSTIC_SCHEMA_VERSION,
+        "operation": command,
         "operationId": operation_id,
         "command": command,
         "status": status,

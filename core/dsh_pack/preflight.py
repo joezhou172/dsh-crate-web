@@ -10,6 +10,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Mapping
 
+from .diagnostics import decorate_issue
 from .errors import DshPackError, IntegrityError, SchemaValidationError, _default_checks
 from .network import network_source_details
 from .pack import _read_entries, sha256_bytes
@@ -108,7 +109,7 @@ class Finding:
             raise ValueError(f"unsupported preflight severity: {self.severity}")
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "severity": self.severity,
             "code": self.code,
             "message": self.message,
@@ -123,6 +124,7 @@ class Finding:
             "suggestedChecks": _default_checks(self.stage, self.code),
             "details": self.details,
         }
+        return decorate_issue(result, operation="inspect", status=self.severity)
 
 
 @dataclass(frozen=True)
