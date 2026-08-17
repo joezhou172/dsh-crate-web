@@ -594,9 +594,9 @@ def inspect_pack(
             if not _version_matches(required, current):
                 findings.append(
                     _finding(
-                        "BLOCKER",
+                        "WARNING",
                         "ENVIRONMENT_VERSION_MISMATCH",
-                        f"Pack requires {label} {required}; current is {current}",
+                        f"Pack was exported with {label} {required}; current {label} is {current} (runtime compatibility may differ)",
                         stage="environment",
                         item=section,
                         expected=required,

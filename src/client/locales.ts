@@ -16,10 +16,13 @@ export type DshCrateLocaleKey =
   | 'createProfile' | 'createProfilePlaceholder' | 'createProfileHint' | 'createPending' | 'createSuccess'
   | 'profileManagement' | 'currentRunningProfile' | 'switchProfile' | 'switchProfileWarning'
   | 'switchCanceled' | 'switchSuccess' | 'switchPending' | 'switchAlreadyActive'
-  | 'exportSuccess' | 'inspectSuccess' | 'verifySuccess' | 'verifyFailed' | 'verifyFinished' | 'importOverwritten'
+  | 'exportSuccess' | 'inspectSuccess' | 'verifySuccess' | 'verifyFailed' | 'verifyFinished' | 'verifyUntestedNote' | 'importOverwritten'
   | 'declaredBundles' | 'runtimePlugins' | 'runtimeEnabled' | 'runtimeDisabled' | 'runtimePluginsInactive' | 'updatedAt' | 'refresh'
   | 'pluginListTab' | 'pluginListLoading' | 'pluginListError' | 'retry'
   | 'officialPlugins' | 'userPlugins' | 'officialBadge' | 'conflictWarning' | 'conflictBundles' | 'collapse' | 'expand'
+  | 'confirmImportAction'
+  | 'diagCode' | 'diagStage' | 'diagItem' | 'diagExpected' | 'diagObserved' | 'diagEvidence' | 'diagImpact'
+  | 'diagOriginalProfile' | 'diagFailedProfile' | 'diagTemporaryProfile' | 'diagCanContinue' | 'diagSuggestedNext'
 
 export const en: Record<DshCrateLocaleKey, string> = {
   nav: 'DSH Crate', title: 'DSH Crate', intro: 'Export, inspect, and import a tested DSH environment Crate.',
@@ -27,7 +30,8 @@ export const en: Record<DshCrateLocaleKey, string> = {
   noProfiles: 'No selectable Profiles were found in this DSH_HOME.', artifactMode: 'Artifact mode',
   embedded: 'Embedded', referenceOnly: 'Reference-only', exportButton: 'Export Crate', exporting: 'Exporting…',
   choosePack: 'Choose a .dshcrate file', inspectButton: 'Run Preflight', importButton: 'Import Crate',
-  confirmImport: 'Preflight passed. Import as a new Profile?', working: 'Working…', noReport: 'No report yet.',
+  confirmImportAction: 'Confirm Import',
+  confirmImport: 'Imports as a new Profile after a Preflight check. Continue?', working: 'Working…', noReport: 'No report yet.',
   noHistory: 'No DSH Crate operations have been recorded.', download: 'Download Crate', plugins: 'Plugins',
   findings: 'Findings', coreStatus: 'Core status', rawJson: 'Raw JSON', diagnostic: 'Failure diagnostic',
   copyDiagnostic: 'Copy full diagnostic', diagnosticCopied: 'Copied', fullDiagnostic: 'View full diagnostic',
@@ -59,8 +63,12 @@ export const en: Record<DshCrateLocaleKey, string> = {
   verifySuccess: 'Verification passed.',
   verifyFailed: 'Verification failed.',
   verifyFinished: 'Verification finished.',
+  verifyUntestedNote: 'UNTESTED means composition was checked only; runtime, model, session, and plugin behavior were NOT actually verified.',
   importOverwritten: 'Profile overwritten.',
   switchPending: 'Switching Profile and waiting for DSH ready…',
+  diagCode: 'Code', diagStage: 'Stage', diagItem: 'Item', diagExpected: 'Expected', diagObserved: 'Observed',
+  diagEvidence: 'Evidence', diagImpact: 'Impact', diagOriginalProfile: 'Original Profile', diagFailedProfile: 'Failed Profile',
+  diagTemporaryProfile: 'Temporary Profile', diagCanContinue: 'Can continue', diagSuggestedNext: 'Suggested next step',
 }
 
 export const zh: Record<DshCrateLocaleKey, string> = {
@@ -69,7 +77,8 @@ export const zh: Record<DshCrateLocaleKey, string> = {
   noProfiles: '当前 DSH_HOME 没有可选择的 Profile。', artifactMode: 'Artifact 模式',
   embedded: '内嵌', referenceOnly: '仅引用', exportButton: '导出 Crate', exporting: '导出中…',
   choosePack: '选择 .dshcrate 文件', inspectButton: '运行 Preflight', importButton: '导入 Crate',
-  confirmImport: 'Preflight 已通过。要作为新 Profile 导入吗？', working: '处理中…', noReport: '暂无报告。',
+  confirmImportAction: '确认导入',
+  confirmImport: '将作为新 Profile 导入，导入前会先执行 Preflight 检查。是否继续？', working: '处理中…', noReport: '暂无报告。',
   noHistory: '还没有 DSH Crate 操作记录。', download: '下载 Crate', plugins: '插件',
   findings: '诊断项', coreStatus: 'Core 状态', rawJson: '原始 JSON', diagnostic: '失败诊断',
   copyDiagnostic: '复制完整诊断', diagnosticCopied: '已复制', fullDiagnostic: '查看完整诊断',
@@ -101,6 +110,10 @@ export const zh: Record<DshCrateLocaleKey, string> = {
   verifySuccess: '验证通过。',
   verifyFailed: '验证未通过。',
   verifyFinished: '验证完成。',
+  verifyUntestedNote: 'UNTESTED 表示仅验证了组合（composition），运行时、模型、会话、插件业务行为均未实际验证。',
   importOverwritten: 'Profile 已覆盖。',
   switchPending: '正在切换 Profile，等待 DSH ready…',
+  diagCode: '诊断代码', diagStage: '失败阶段', diagItem: '对象', diagExpected: '预期', diagObserved: '实际', diagEvidence: '证据',
+  diagImpact: '影响', diagOriginalProfile: '原 Profile 状态', diagFailedProfile: '失败 Profile 状态', diagTemporaryProfile: '临时 Profile 状态',
+  diagCanContinue: '是否可继续', diagSuggestedNext: '建议下一步',
 }

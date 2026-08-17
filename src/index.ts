@@ -474,19 +474,23 @@ async function listInstalledBundles(profileModules: string, anchorModules: strin
  * Packages published by the DSH project are treated as official built-ins.
  * This is the single source of truth for the official/user split used by the
  * plugin inventory UI: a runtime loader row is official only when the package
- * itself is an official bundle. Loader row ids are deliberately NOT used,
- * because a user plugin may register a row id that collides with an official
- * built-in (for example a custom sidebar) and must stay in the user group.
+ * itself is an official bundle, or when an official bundle's patch inserts it
+ * as a built-in loader row (for example the official web-app bundle composes
+ * `dsh-better-sidebar` under its own package name). Loader row ids are
+ * deliberately NOT used, because a user plugin may register a row id that
+ * collides with an official built-in (for example a custom sidebar) and must
+ * stay in the user group.
  */
 function isOfficialPackage(name: string): boolean {
   return name.startsWith('@deepseek-ai/')
 }
 
-/** Collect loader row ids registered via top-level ``insert`` blocks. */
-function insertedLoaderIds(patchText: string): string[] {
-  const ids: string[] = []
+/** Loader row identities (`id`/`name`) registered by an ``insert`` block. */
+function insertedLoaderRows(patchText: string): { id?: string; name?: string }[] {
+  const rows: { id?: string; name?: string }[] = []
   let inInsert = false
   let insertIndent: number | undefined
+  let fieldIndent: number | undefined
   for (const raw of patchText.split(/\r?\n/)) {
     const line = raw.replace(/\s+$/, '')
     const stripped = line.trim()
@@ -496,24 +500,47 @@ function insertedLoaderIds(patchText: string): string[] {
       const key = stripped.slice(2).trim()
       inInsert = key === 'insert:'
       insertIndent = undefined
+      fieldIndent = undefined
       continue
     }
     if (!inInsert) continue
-    if (!stripped.startsWith('- ')) continue
-    if (insertIndent === undefined) insertIndent = indent
-    if (indent !== insertIndent) continue
-    const row = stripped.slice(2).trim()
-    if (row.startsWith('id:')) {
-      const value = row.slice(3).trim().replace(/^["']|["']$/g, '')
-      if (value) ids.push(value)
+    if (stripped.startsWith('- ')) {
+      if (insertIndent === undefined) insertIndent = indent
+      if (indent !== insertIndent) continue
+      fieldIndent = indent + 2
+      const row = stripped.slice(2).trim()
+      const match = /^([a-zA-Z][a-zA-Z0-9_-]*):\s*(.*)$/.exec(row)
+      if (match === null) continue
+      const value = match[2].trim().replace(/^["']|["']$/g, '')
+      if (value === '') continue
+      if (match[1] === 'id') rows.push({ id: value })
+      if (match[1] === 'name') rows.push({ name: value })
+      continue
     }
+    // Field line of the current insert row (name/package and row sub-fields).
+    if (fieldIndent === undefined || indent !== fieldIndent) continue
+    const field = /^([a-zA-Z][a-zA-Z0-9_-]*):\s*(.*)$/.exec(stripped)
+    if (field === null) continue
+    const value = field[2].trim().replace(/^["']|["']$/g, '')
+    if (value === '') continue
+    if (field[1] === 'id') rows.push({ id: value })
+    if (field[1] === 'name') rows.push({ name: value })
   }
-  return ids
+  return rows
 }
 
-/** Loader row ids registered by one installed Bundle patch. */
-async function installedBundlePatchIds(home: string, profileName: string, bundleName: string, patch: string): Promise<Set<string>> {
-  const ids = new Set<string>()
+/** Loader row ids registered via top-level ``insert`` blocks. */
+function insertedLoaderIds(patchText: string): string[] {
+  return insertedLoaderRows(patchText).filter((row): row is { id: string } => row.id !== undefined).map(row => row.id)
+}
+
+/** Loader row package names registered via top-level ``insert`` blocks. */
+function insertedLoaderNames(patchText: string): string[] {
+  return insertedLoaderRows(patchText).filter((row): row is { name: string } => row.name !== undefined).map(row => row.name)
+}
+
+/** Read one installed Bundle's patch text from either resolution root. */
+async function readInstalledBundlePatch(home: string, profileName: string, bundleName: string, patch: string): Promise<string | undefined> {
   const segments = bundleName.split('/')
   const candidates = [
     join(home, 'profiles', profileName, 'node_modules', ...segments),
@@ -521,14 +548,41 @@ async function installedBundlePatchIds(home: string, profileName: string, bundle
   ]
   for (const candidate of candidates) {
     try {
-      const patchText = await readFile(join(candidate, patch), 'utf8')
-      for (const id of insertedLoaderIds(patchText)) ids.add(id)
-      break
+      return await readFile(join(candidate, patch), 'utf8')
     } catch {
-      // Try the next resolution root; a missing patch leaves an empty set.
+      // Try the next resolution root; a missing patch yields undefined.
     }
   }
+  return undefined
+}
+
+/** Loader row ids registered by one installed Bundle patch. */
+async function installedBundlePatchIds(home: string, profileName: string, bundleName: string, patch: string): Promise<Set<string>> {
+  const ids = new Set<string>()
+  const patchText = await readInstalledBundlePatch(home, profileName, bundleName, patch)
+  if (patchText === undefined) return ids
+  for (const id of insertedLoaderIds(patchText)) ids.add(id)
   return ids
+}
+
+/**
+ * The set of package names treated as official built-ins for a Profile:
+ * every @deepseek-ai/* bundle plus every loader row name its patches insert.
+ */
+async function officialBundleNames(home: string, profileName: string, bundles: JsonObject[]): Promise<Set<string>> {
+  const official = new Set<string>()
+  const pending: { name: string; patch: string }[] = []
+  for (const bundle of bundles) {
+    if (typeof bundle.name !== 'string' || !bundle.name.startsWith('@deepseek-ai/')) continue
+    official.add(bundle.name)
+    if (typeof bundle.patch === 'string' && bundle.patch.trim() !== '') pending.push({ name: bundle.name, patch: bundle.patch })
+  }
+  for (const item of pending) {
+    const patchText = await readInstalledBundlePatch(home, profileName, item.name, item.patch)
+    if (patchText === undefined) continue
+    for (const name of insertedLoaderNames(patchText)) official.add(name)
+  }
+  return official
 }
 
 
@@ -560,14 +614,16 @@ async function listProfiles(home: string): Promise<JsonObject[]> {
         // exported as an active Bundle.
         const composedBundles = Array.isArray(bundles) ? bundles.filter((name): name is string => typeof name === 'string') : []
         const activePlugins = new Set(composedBundles)
-        const installedBundles = (await listInstalledBundles(
+        const scannedBundles = await listInstalledBundles(
           join(root, entry.name, 'node_modules'),
           join(root, 'node_modules'),
-        ))
+        )
+        const officialNames = await officialBundleNames(home, entry.name, scannedBundles)
+        const installedBundles = scannedBundles
           .map(bundle => ({
             ...bundle,
             active: activePlugins.has(String(bundle.name)),
-            official: isOfficialPackage(String(bundle.name)),
+            official: officialNames.has(String(bundle.name)),
           }))
           // A Profile's plugin list is its declared Bundles plus any
           // dependency that is itself an installed Bundle package. Packages
@@ -695,10 +751,21 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: JsonObj
   await ensureCrateBundleInAllProfiles(home)
   if (action === 'profiles') {
     const runtime = currentRuntime(home)
-    const isOfficialRow = (row: JsonObject): boolean =>
-      typeof row.name === 'string' && isOfficialPackage(row.name)
+    const profiles = await listProfiles(home)
+    const runtimeOfficialNames = new Set<string>()
+    const runtimeRow = typeof runtime.currentProfile === 'string'
+      ? profiles.find(candidate => candidate.name === runtime.currentProfile)
+      : undefined
+    if (runtimeRow !== undefined && Array.isArray(runtimeRow.installedBundles)) {
+      const names = await officialBundleNames(home, String(runtimeRow.name), runtimeRow.installedBundles as JsonObject[])
+      for (const name of names) runtimeOfficialNames.add(name)
+    }
+    const isOfficialRow = (row: JsonObject): boolean => {
+      const name = typeof row.name === 'string' ? row.name : ''
+      return isOfficialPackage(name) || runtimeOfficialNames.has(name)
+    }
     const classifiedPlugins = runtimePlugins.map(row => ({ ...row, official: isOfficialRow(row) }))
-    return { status: 'ok', profiles: await listProfiles(home), runtimePlugins: classifiedPlugins, runtime }
+    return { status: 'ok', profiles, runtimePlugins: classifiedPlugins, runtime }
   }
   if (action === 'create-profile') return createProfile(home, body, workspace)
   if (action === 'history') return { status: 'ok', history: await readHistory(workspace.history) }
@@ -740,17 +807,14 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: JsonObj
     const profileRelative = relative(join(home, 'profiles'), resolve(profile))
     if (!profileRelative || profileRelative.startsWith('..') || profileRelative.includes('\\')) throw new Error('profileName escaped DSH_HOME')
     const outputName = `${profileName}-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}.dshcrate`
-    const output = join(workspace.exports, outputName)
-    const args = ['verify', '--dsh-home', home, '--profile', profileName, '--mode', mode, '--json', ...runtimeCoreArgs()]
-    let runnerConfigPath: string | undefined
-    if (body.runnerConfig !== undefined) {
-      if (!isObject(body.runnerConfig)) throw new Error('runnerConfig must be a JSON object')
-      const verifyDir = join(workspace.work, 'verify')
-      await mkdir(verifyDir, { recursive: true })
-      runnerConfigPath = join(verifyDir, 'verify-' + randomUUID() + '.json')
-      await writeFile(runnerConfigPath, JSON.stringify(body.runnerConfig, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' })
-      args.push('--runner-config', runnerConfigPath)
-    }
+    const args = ['export', '--profile', profile, '--output', join(workspace.exports, outputName), '--json', ...runtimeCoreArgs()]
+    if (body.includeInstalledBundles === true) args.push('--include-installed-bundles')
+    const embed = Array.isArray(body.embed) ? body.embed : []
+    const referenceOnly = Array.isArray(body.referenceOnly) ? body.referenceOnly : []
+    for (const name of embed) args.push('--embed', safePluginName(name, 'embed plugin'))
+    for (const name of referenceOnly) args.push('--reference-only', safePluginName(name, 'reference-only plugin'))
+    const requiredSecrets = Array.isArray(body.requiredSecrets) ? body.requiredSecrets : []
+    for (const name of requiredSecrets) args.push('--required-secret', safeName(name, 'required Secret'))
     const run = await runCore(home, args)
     let result: unknown
     try { result = parseCore(run.stdout) } catch { result = undefined }
@@ -868,7 +932,7 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: JsonObj
     const operationId = randomUUID()
     const reportPath = join(workspace.work, `switch-${operationId}.json`)
     const args = replaceArgument(replaceArgument(process.argv.slice(2), '--profile', profileName), '--port', String(runtime.port))
-    const helperPath = join(dirname(fileURLToPath(import.meta.url)), 'restart-helper.mjs')
+    const helperPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'restart-helper.mjs')
     try { await access(helperPath) } catch { throw new Error(`restart helper is missing: ${helperPath}`) }
     const spec = {
       operationId, reportPath, oldPid: process.pid, oldProfile, targetProfile: profileName,

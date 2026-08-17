@@ -93,6 +93,28 @@ class ExportResult:
     data: PackData
 
 
+
+def _imported_required_secrets(profile_dir: Path) -> tuple[str, ...]:
+    """Return requiredSecrets recorded for this Profile by a prior Import.
+
+    Import keeps Pack metadata outside the runtime Profile under
+    ``DSH_HOME/.dsh-pack/imports/<profile>/manifest.json``.  Re-export of an
+    imported Profile must preserve the required Secret names so the Pack keeps
+    its original semantics; values are never stored or returned.
+    """
+    metadata = profile_dir.parent.parent / ".dsh-pack" / "imports" / profile_dir.name / "manifest.json"
+    try:
+        value = json.loads(metadata.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return ()
+    if not isinstance(value, dict):
+        return ()
+    secrets = value.get("requiredSecrets", [])
+    if not isinstance(secrets, list):
+        return ()
+    return tuple(name for name in secrets if isinstance(name, str) and name.strip())
+
+
 def _read_json_file(path: Path, label: str) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -812,13 +834,14 @@ def export_profile(
                 raise ExportError(f"duplicate generated artifact filename: {artifact_name}")
             artifacts[artifact_name] = content
 
+    required_secrets = tuple(options.required_secrets) or _imported_required_secrets(profile_dir)
     manifest = {
         "schemaVersion": 1,
         "format": "dshcrate",
         "packVersion": "0.1.0",
         "profile": {"name": profile_dir.name},
         "environment": copy.deepcopy(dict(options.environment)),
-        "requiredSecrets": list(options.required_secrets),
+        "requiredSecrets": list(required_secrets),
     }
     data = PackData(
         manifest=manifest,

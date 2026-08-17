@@ -14,7 +14,7 @@ export const css = {
   inventory: 'dsh-crate-inventory', inventoryItem: 'dsh-crate-inventory-item', success: 'dsh-crate-success',
   modalBackdrop: 'dsh-crate-modal-backdrop', modal: 'dsh-crate-modal', modalActions: 'dsh-crate-modal-actions',
   group: 'dsh-crate-group', groupHead: 'dsh-crate-group-head', groupToggle: 'dsh-crate-group-toggle', groupBody: 'dsh-crate-group-body',
-  badge: 'dsh-crate-badge', conflict: 'dsh-crate-conflict',
+  badge: 'dsh-crate-badge', conflict: 'dsh-crate-conflict', toneOk: 'dsh-crate-tone-ok', toneBad: 'dsh-crate-tone-bad', toneNeutral: 'dsh-crate-tone-neutral',
 }
 
 export const STYLE = `
@@ -32,6 +32,7 @@ export const STYLE = `
 .dsh-crate-group{display:flex;flex-direction:column;gap:6px}.dsh-crate-group-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 0}.dsh-crate-group-toggle{border:0;background:transparent;color:var(--dsw-alias-state-business-primary,#4f8cff);font:inherit;font-size:12px;cursor:pointer;padding:2px 4px}.dsh-crate-group-body{display:flex;flex-direction:column;gap:6px}
 .dsh-crate-badge{margin-left:6px;padding:1px 5px;border-radius:4px;background:var(--dsw-alias-fill-tertiary);color:var(--dsw-alias-label-tertiary);font-size:11px;border:1px solid var(--dsw-alias-border-l2)}.dsh-crate-conflict{color:var(--dsw-alias-label-negative)}
 .dsh-crate-modal-backdrop{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(0,0,0,.58)}.dsh-crate-modal{display:flex;flex-direction:column;gap:12px;width:min(420px,calc(100vw - 48px));padding:18px;border:1px solid var(--dsw-alias-border-l2,#3a3a40);border-radius:10px;background:var(--dsw-alias-fill-primary,#1d1d20);color:var(--dsw-alias-label-primary,#f9fafb);box-shadow:0 18px 50px rgba(0,0,0,.45)}.dsh-crate-modal h3{margin:0;font-size:16px}.dsh-crate-modal p{margin:0;font-size:13px;color:var(--dsw-alias-label-tertiary,#b6b6bd)}.dsh-crate-modal-actions{display:flex;justify-content:flex-end;gap:8px}.dsh-crate-modal-actions button:last-child{background:var(--dsw-alias-state-business-primary,#4b7bec);color:#fff}
+.dsh-crate-tone-ok{color:var(--dsw-alias-label-positive)}.dsh-crate-tone-bad{color:var(--dsw-alias-label-negative)}.dsh-crate-tone-neutral{color:var(--dsw-alias-label-tertiary)}
 `
 
 type Tab = 'export' | 'import' | 'inspect' | 'verify' | 'history'
@@ -42,6 +43,27 @@ interface HistoryItem { time?: string; action?: string; status?: string; profile
 type PageProps = PropsRuntime<'settings.section'> & PropsLocale<'dsh.crate'>
 
 export function isObject(value: unknown): value is Json { return value !== null && typeof value === 'object' && !Array.isArray(value) }
+
+function formatTime(value: unknown): string {
+  if (typeof value !== 'string' || !value) return ''
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
+
+function toneOf(status: unknown): string {
+  const text = String(status ?? '').toUpperCase()
+  if (text.includes('FAIL') || text.includes('ERROR') || text === 'BLOCKER' || text === 'UNKNOWN') return css.toneBad
+  if (text.includes('PASS') || text === 'READY' || text === 'PREPARED' || text === 'OK') return css.toneOk
+  return css.toneNeutral
+}
+
+const FIELD_LABELS: Record<string, DshCrateLocaleKey> = {
+  code: 'diagCode', stage: 'diagStage', item: 'diagItem', expected: 'diagExpected',
+  observed: 'diagObserved', evidence: 'diagEvidence', impact: 'diagImpact',
+  originalProfileStatus: 'diagOriginalProfile', failedProfileStatus: 'diagFailedProfile',
+  temporaryProfileStatus: 'diagTemporaryProfile', canContinue: 'diagCanContinue',
+  suggestedNextStep: 'diagSuggestedNext',
+}
 
 function resultOf(value: Json): Json {
   return isObject(value.result) ? value.result : value
@@ -173,7 +195,7 @@ function Diagnostic({ value, t }: { value: Json; t: (key: DshCrateLocaleKey) => 
     <strong>{t('diagnostic')}</strong>
     <dl className={css.diagnosticGrid}>
       {fields.filter(field => diagnostic[field] !== undefined).map(field => <div key={field}>
-        <dt>{field}</dt><dd>{display(diagnostic[field])}</dd>
+        <dt>{t(FIELD_LABELS[field] ?? (field as DshCrateLocaleKey))}</dt><dd>{display(diagnostic[field])}</dd>
       </div>)}
     </dl>
     <div><button className={css.button} type="button" onClick={() => void copy()}>{copied ? t('diagnosticCopied') : t('copyDiagnostic')}</button></div>
@@ -186,7 +208,7 @@ function Report({ value, t }: { value: Json | undefined; t: (key: DshCrateLocale
   const result = resultOf(value)
   const findings = objects(result.findings)
   return <div className={css.report} data-status={String(result.status ?? 'UNKNOWN')}>
-    <div><strong>{t('coreStatus')}</strong> · {String(result.status ?? 'UNKNOWN')}</div>
+    <div><strong>{t('coreStatus')}</strong> · <span className={toneOf(result.status)}>{String(result.status ?? 'UNKNOWN')}</span></div>
     {findings.length > 0 ? <>
       <strong>{t('findings')}</strong>
       {findings.map((finding, index) => <div className={css.finding} key={`${String(finding.code)}-${index}`}>
@@ -242,8 +264,9 @@ function VerifyReport({ value, t }: { value: Json | undefined; t: (key: DshCrate
   const steps = objects(result.steps)
   return <div className={css.report} data-status={String(result.status ?? 'UNKNOWN')}>
     <div><strong>{t('coreStatus')}</strong> · {String(result.status ?? 'UNKNOWN')}</div>
+    {String(result.status ?? '') === 'UNTESTED' ? <p className={css.muted}>{t('verifyUntestedNote')}</p> : null}
     {steps.map((step, index) => <div className={css.step} key={`${String(step.name)}-${index}`}>
-      <span className={css.stepStatus}>{String(step.status ?? 'UNKNOWN')}</span>
+      <span className={`${css.stepStatus} ${toneOf(step.status)}`}>{String(step.status ?? 'UNKNOWN')}</span>
       <span><strong>{String(step.name ?? 'unknown')}</strong> — {String(step.message ?? '')}<br /><small>{display(step.evidence ?? {})}</small></span>
     </div>)}
     <Diagnostic value={value} t={t} />
@@ -466,7 +489,7 @@ export function DshCratePage({ t }: PageProps) {
     }
     const target = importTarget.trim() || profiles[0]?.name || ''
     if (!target) { setError(t('noProfiles')); return }
-    if (!window.confirm(`${t('overwriteWarning')}\n\n${target}`)) { setError(t('overwriteCanceled')); return }
+    if (!window.confirm(`${t('overwriteWarning')}\n\n${target}`)) { showToast(t('overwriteCanceled')); setError(''); return }
     setBusy(true); setError('')
     try {
       const value = await request('import', { packBase64: await toBase64(file), targetProfile: target, overwrite: true, confirmOverwrite: true })
@@ -593,7 +616,7 @@ export function DshCratePage({ t }: PageProps) {
     </div> : null}
     {tab === 'inspect' ? <div className={css.form}>{input}<Report value={report} t={t} /><button className={css.button} type="button" disabled={busy || !file} onClick={async () => { if (file) await run('inspect', { packBase64: await toBase64(file) }) }}>{busy ? t('working') : t('inspectButton')}</button></div> : null}
     {tab === 'verify' ? <div className={css.form}>{profiles.length === 0 ? <p className={css.muted}>{t('noProfiles')}</p> : <>{profileSelect}<button className={css.button} type="button" disabled={busy || !profile} onClick={() => void run('verify', { profileName: profile, mode: 'web' })}>{busy ? t('working') : t('verifyButton')}</button><VerifyReport value={report} t={t} /></>}</div> : null}
-    {tab === 'history' ? <ul className={css.history}>{history.length === 0 ? <li className={css.muted}>{t('noHistory')}</li> : history.map((item, index) => <li className={css.historyItem} key={`${item.time}-${index}`}><span>{item.time} · {item.action} · {item.profile ?? item.pack ?? ''}</span><strong>{item.status}</strong></li>)}</ul> : null}
+    {tab === 'history' ? <ul className={css.history}>{history.length === 0 ? <li className={css.muted}>{t('noHistory')}</li> : history.map((item, index) => <li className={css.historyItem} key={`${item.time}-${index}`}><span>{formatTime(item.time)} · {item.action} · {item.profile ?? item.pack ?? ''}</span><strong className={toneOf(item.status)}>{item.status}</strong></li>)}</ul> : null}
     {newProfileDialogOpen ? <div className={css.modalBackdrop} role="presentation">
       <div className={css.modal} role="dialog" aria-modal="true" aria-labelledby="dsh-crate-new-profile-title">
         <h3 id="dsh-crate-new-profile-title">{t('newProfileName')}</h3>
@@ -602,7 +625,7 @@ export function DshCratePage({ t }: PageProps) {
         {newProfileDialogError ? <p className={css.error} role="alert">{newProfileDialogError}</p> : null}
         <div className={css.modalActions}>
           <button className={css.button} type="button" onClick={() => setNewProfileDialogOpen(false)}>{t('cancel')}</button>
-          <button className={css.button} type="button" onClick={() => void confirmNewProfileImport()}>{t('importButton')}</button>
+          <button className={css.button} type="button" onClick={() => void confirmNewProfileImport()}>{t('confirmImportAction')}</button>
         </div>
       </div>
     </div> : null}

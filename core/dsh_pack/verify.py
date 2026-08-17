@@ -223,6 +223,85 @@ def _profile_bundles(profile_manifest: Mapping[str, Any]) -> tuple[list[str] | N
     return list(bundles), None
 
 
+def _resolve_installed_package_dir(anchor_dir: Path, name: str) -> Path | None:
+    """Node-style node_modules lookup from an anchor directory.
+
+    Mirrors DSH ``packageDirFromAnchor`` (installation anchor, then the profile
+    directory): probes the profile-local ``node_modules``, the shared
+    ``profiles/node_modules`` layer, home-level ``node_modules``, then each
+    ancestor.  This matches what the Cordis Loader would import from the same
+    anchor.
+    """
+    parts = Path(*name.split("/"))
+    current = anchor_dir
+    while True:
+        candidate = current / "node_modules" / parts
+        if (candidate / "package.json").is_file():
+            return candidate
+        parent = current.parent
+        if parent == current:
+            return None
+        current = parent
+    return None
+
+
+def _internal_composition_issues(
+    profile_path: Path,
+    dependencies: Mapping[str, Any],
+    bundles: Sequence[str],
+) -> list[dict[str, Any]]:
+    """Verify a Profile against its own manifest when no Pack metadata exists.
+
+    Used when the Crate Import metadata directory for this Profile is absent
+    (the Profile was not created by a Crate Import, or the metadata was
+    removed).  This can never claim a Pack round-trip: it only checks that
+    declared Bundles are installed with their patch files, and that declared
+    dependencies resolve.  The caller marks the Pack-comparison dimension as
+    UNTESTED.
+    """
+    issues: list[dict[str, Any]] = []
+    declared = dict(dependencies) if isinstance(dependencies, Mapping) else {}
+    for name in bundles:
+        package_dir = _resolve_installed_package_dir(profile_path, name)
+        if package_dir is None:
+            issues.append({"code": "BUNDLE_NOT_INSTALLED", "bundle": name, "error": "not resolvable from the profile or shared node_modules layers"})
+            continue
+        installed, error = _json_object(package_dir / "package.json")
+        if installed is None:
+            issues.append({"code": "BUNDLE_NOT_INSTALLED", "bundle": name, "error": error})
+            continue
+        dsh = installed.get("dsh", {})
+        if not isinstance(dsh, Mapping):
+            dsh = {}
+        bundle = dsh.get("bundle", {})
+        patch = bundle.get("patch") if isinstance(bundle, Mapping) else None
+        normalized_patch = posixpath.normpath(patch.replace("\\", "/")) if isinstance(patch, str) else ""
+        safe_patch = (
+            normalized_patch not in {"", ".", ".."}
+            and not normalized_patch.startswith("../")
+            and not normalized_patch.startswith("/")
+            and ".." not in normalized_patch.split("/")
+        )
+        patch_path = package_dir / Path(*normalized_patch.split("/")) if safe_patch else None
+        if not isinstance(patch, str) or not patch.strip() or patch_path is None or not patch_path.is_file():
+            issues.append({
+                "code": "BUNDLE_PATCH_MISSING",
+                "bundle": name,
+                "patch": patch,
+                "path": str(patch_path) if patch_path else None,
+            })
+    for name, spec in declared.items():
+        package_dir = _resolve_installed_package_dir(profile_path, name)
+        if package_dir is None:
+            issues.append({
+                "code": "DEPENDENCY_NOT_INSTALLED",
+                "plugin": name,
+                "spec": spec,
+                "error": "not resolvable from the profile or shared node_modules layers",
+            })
+    return issues
+
+
 def _composition_step(options: "VerifyOptions") -> VerifyStep:
     profile_path = options.dsh_home / "profiles" / options.profile_name
     metadata_path = options.dsh_home / ".dsh-pack" / "imports" / options.profile_name
@@ -239,9 +318,50 @@ def _composition_step(options: "VerifyOptions") -> VerifyStep:
     if bundle_error or bundles is None:
         return _step("composition", "FAIL", bundle_error or "invalid Bundle composition", evidence={"path": str(package_path)})
 
-    metadata_manifest, manifest_error = _json_object(metadata_path / "manifest.json")
-    lock, lock_error = _json_object(metadata_path / "plugins.lock.json")
-    prepared, prepared_error = _json_object(metadata_path / "prepared.json")
+    manifest_file = metadata_path / "manifest.json"
+    lock_file = metadata_path / "plugins.lock.json"
+    prepared_file = metadata_path / "prepared.json"
+    metadata_present = metadata_path.is_dir() and any(
+        candidate.is_file() for candidate in (manifest_file, lock_file, prepared_file)
+    )
+    if not metadata_present:
+        # This Profile was not created by a Crate Import, or the Import
+        # metadata was removed.  The Pack-comparison dimension is UNTESTED:
+        # only an internal consistency check against the Profile's own
+        # manifest is possible, never a claimed round-trip.
+        dependencies = profile_manifest.get("dependencies", {})
+        if not isinstance(dependencies, Mapping):
+            return _step(
+                "composition",
+                "FAIL",
+                "Profile dependencies is not an object",
+                evidence={"path": str(package_path)},
+            )
+        internal_issues = _internal_composition_issues(profile_path, dependencies, bundles)
+        if internal_issues:
+            return _step(
+                "composition",
+                "FAIL",
+                "Crate Import metadata is absent and the Profile fails its internal consistency check",
+                evidence={
+                    "metadataPath": str(metadata_path),
+                    "packComparison": "UNTESTED",
+                    "issues": internal_issues,
+                },
+            )
+        return _step(
+            "composition",
+            "DEGRADED",
+            "Crate Import metadata is absent; only internal consistency was checked, Pack round-trip UNTESTED",
+            evidence={
+                "metadataPath": str(metadata_path),
+                "profileBundles": bundles,
+                "packComparison": "UNTESTED",
+            },
+        )
+    metadata_manifest, manifest_error = _json_object(manifest_file)
+    lock, lock_error = _json_object(lock_file)
+    prepared, prepared_error = _json_object(prepared_file)
     if manifest_error or lock_error or prepared_error or metadata_manifest is None or lock is None or prepared is None:
         return _step(
             "composition",

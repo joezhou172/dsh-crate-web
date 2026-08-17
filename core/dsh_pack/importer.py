@@ -470,6 +470,136 @@ def _install_network_reference(profile_path: Path, plugin: Mapping[str, Any], op
     }
 
 
+def _manifest_declares_workspace(content: bytes) -> bool:
+    """Return True when an embedded tarball uses the workspace: protocol.
+
+    Workspace-protocol dependencies cannot be reconciled by npm outside the
+    DSH monorepo, and their packages are supplied by the DSH installation
+    anchor at runtime.  Such embedded packages are extracted as-is and skip
+    the package-manager closure pass.
+    """
+
+    try:
+        with tarfile.open(fileobj=BytesIO(content), mode="r:gz") as archive:
+            member = archive.getmember("package/package.json")
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                return False
+            manifest = json.loads(extracted.read())
+    except (KeyError, OSError, tarfile.TarError, json.JSONDecodeError):
+        return False
+    if not isinstance(manifest, dict):
+        return False
+    declared = dict(manifest.get("dependencies") or {})
+    declared.update(manifest.get("peerDependencies") or {})
+    return any(
+        isinstance(specifier, str) and specifier.startswith("workspace:")
+        for specifier in declared.values()
+    )
+
+
+def _install_embedded_dependencies(
+    profile_path: Path,
+    embedded_artifacts: list[tuple[dict[str, Any], bytes]],
+    options: ImportOptions,
+) -> None:
+    """Install the dependency closure of every eligible embedded plugin.
+
+    An embedded artifact is the recorded package tarball itself; it carries the
+    plugin code but not the plugin's transitive ``dependencies``.  A single npm
+    reconciliation with every eligible embedded tarball as an install argument
+    restores that closure so the resulting Profile can boot with the same
+    dependency closure the source Profile had.  Embedded packages that declare
+    ``workspace:`` protocol dependencies are excluded: their closure is supplied
+    by the DSH installation anchor at runtime.  Lifecycle scripts stay disabled
+    and the local npm cache is preferred so already-available dependencies do
+    not require a second network round trip.
+    """
+
+    if not embedded_artifacts:
+        return
+    # DSH workspace packages declare their internal dependencies with the
+    # workspace: protocol, which a plain package manager cannot reconcile
+    # outside the monorepo.  Those closures are supplied by the DSH
+    # installation anchor at runtime, so the extracted package is kept as-is
+    # and only plugins with a normal registry closure run through npm.
+    eligible: list[tuple[dict[str, Any], bytes]] = []
+    for plugin, content in embedded_artifacts:
+        if _manifest_declares_workspace(content):
+            continue
+        eligible.append((plugin, content))
+    if not eligible:
+        return
+    staging = Path(tempfile.mkdtemp(prefix=".dsh-pack-embedded-", dir=profile_path.parent))
+    names = [str(plugin.get("name")) for plugin, _content in eligible]
+    try:
+        tarball_paths: list[str] = []
+        for index, (_plugin, content) in enumerate(eligible):
+            tarball = staging / f"embedded-{index}.tgz"
+            tarball.write_bytes(content)
+            tarball_paths.append(str(tarball))
+        command = [
+            _npm_command(options.npm_command),
+            "install",
+            "--ignore-scripts",
+            "--legacy-peer-deps",
+            "--no-save",
+            "--no-package-lock",
+            "--no-audit",
+            "--no-fund",
+            "--prefer-offline",
+            "--prefix",
+            str(profile_path),
+            "--",
+            *tarball_paths,
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=profile_path,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=max(1, int(options.network_install_timeout)),
+            )
+        except FileNotFoundError as error:
+            raise PackImportError(
+                f"npm command is unavailable while installing embedded dependencies for {', '.join(names)}",
+                stage="embedded-install",
+                code="EMBEDDED_NPM_UNAVAILABLE",
+                details={"plugins": names, "command": command[0], "error": str(error)},
+            ) from error
+        except subprocess.TimeoutExpired as error:
+            raise PackImportError(
+                f"embedded dependency install timed out for {', '.join(names)}",
+                stage="embedded-install",
+                code="EMBEDDED_DEPENDENCIES_TIMEOUT",
+                details={"plugins": names, "timeoutSeconds": options.network_install_timeout},
+            ) from error
+        except OSError as error:
+            raise PackImportError(
+                f"cannot start npm while installing embedded dependencies for {', '.join(names)}",
+                stage="embedded-install",
+                code="EMBEDDED_NPM_FAILED",
+                details={"plugins": names, "command": command[0], "error": str(error)},
+            ) from error
+        if completed.returncode != 0:
+            raise PackImportError(
+                f"embedded dependency install failed for {', '.join(names)} with exit code {completed.returncode}",
+                stage="embedded-install",
+                code="EMBEDDED_DEPENDENCIES_INSTALL_FAILED",
+                details={
+                    "plugins": names,
+                    "command": command,
+                    "exitCode": completed.returncode,
+                    "stdout": _network_error_output(completed.stdout),
+                    "stderr": _network_error_output(completed.stderr),
+                },
+            )
+    finally:
+        _cleanup(staging)
+
+
 def _context(options: ImportOptions) -> PreflightContext:
     return PreflightContext(
         current_environment=dict(options.current_environment),
@@ -916,28 +1046,8 @@ def import_pack(
         for relative, content in data.profile_files.items():
             _write_file(temp_profile, relative, content)
 
-        installed: list[dict[str, Any]] = []
+        installed: dict[str, dict[str, Any]] = {}
         lock_plugins = [plugin for plugin in data.plugins_lock.get("plugins", []) if isinstance(plugin, Mapping)]
-        for plugin in lock_plugins:
-            artifact = plugin.get("artifact")
-            if not isinstance(artifact, Mapping) or artifact.get("mode") != "embedded":
-                continue
-            path = artifact.get("path")
-            if not isinstance(path, str):
-                raise PackImportError(
-                    f"embedded artifact path missing for {plugin.get('name')}",
-                    stage="embedded-install",
-                    code="ARTIFACT_PATH_MISSING",
-                )
-            content = data.plugin_artifacts.get(path[len("plugins/"):])
-            if content is None:
-                raise PackImportError(
-                    f"embedded artifact missing for {plugin.get('name')}: {path}",
-                    stage="embedded-install",
-                    code="REQUIRED_ARTIFACT_MISSING",
-                )
-            _extract_embedded_artifact(temp_profile, plugin, content)
-            installed.append(_verify_identity(temp_profile, plugin))
 
         # Network reference installs run first: npm reconciles the whole
         # Profile tree at the temporary prefix and prunes packages that are not
@@ -960,7 +1070,41 @@ def import_pack(
                     raise
                 warnings.append(error.as_dict())
                 continue
-            installed.append(_verify_identity(temp_profile, plugin))
+            installed[name] = _verify_identity(temp_profile, plugin)
+
+        # Embedded artifacts are self-contained package tarballs.  Collect
+        # them, install the eligible dependency closure through the package
+        # manager BEFORE any manual placement so a reconciling npm run cannot
+        # prune manually placed packages, then extract whatever npm did not
+        # place (workspace-protocol packages whose closure is supplied by the
+        # DSH installation anchor).
+        embedded_artifacts: list[tuple[dict[str, Any], bytes]] = []
+        for plugin in lock_plugins:
+            artifact = plugin.get("artifact")
+            if not isinstance(artifact, Mapping) or artifact.get("mode") != "embedded":
+                continue
+            name = str(plugin["name"])
+            path = artifact.get("path")
+            if not isinstance(path, str):
+                raise PackImportError(
+                    f"embedded artifact path missing for {name}",
+                    stage="embedded-install",
+                    code="ARTIFACT_PATH_MISSING",
+                )
+            content = data.plugin_artifacts.get(path[len("plugins/"):])
+            if content is None:
+                raise PackImportError(
+                    f"embedded artifact missing for {name}: {path}",
+                    stage="embedded-install",
+                    code="REQUIRED_ARTIFACT_MISSING",
+                )
+            embedded_artifacts.append((plugin, content))
+        _install_embedded_dependencies(temp_profile, embedded_artifacts, options)
+        for plugin, _content in embedded_artifacts:
+            name = str(plugin["name"])
+            if not _package_install_path(temp_profile, name).exists():
+                _extract_embedded_artifact(temp_profile, plugin, _content)
+            installed[name] = _verify_identity(temp_profile, plugin)
 
         for plugin in lock_plugins:
             artifact = plugin.get("artifact")
@@ -979,11 +1123,11 @@ def import_pack(
                         code="PLUGIN_INSTALL_FAILED",
                         details={"plugin": name, "error": str(error)},
                     ) from error
-                installed.append(_verify_identity(temp_profile, plugin))
+                installed[name] = _verify_identity(temp_profile, plugin)
                 continue
             if name in options.reference_plugin_sources:
                 _copy_reference_source(temp_profile, plugin, Path(options.reference_plugin_sources[name]))
-                installed.append(_verify_identity(temp_profile, plugin))
+                installed[name] = _verify_identity(temp_profile, plugin)
                 continue
             if options.allow_network_reference_install and name in network_plugins:
                 continue  # already installed and verified in the network pass
@@ -994,6 +1138,18 @@ def import_pack(
                     code="PLUGIN_MISSING",
                     details={"plugin": name},
                 )
+
+        # Re-verify every installed package after the final install pass so a
+        # package-manager reconciliation that pruned a manually placed package
+        # is caught here instead of surfacing as a Profile that cannot boot.
+        for plugin in lock_plugins:
+            artifact = plugin.get("artifact")
+            if not isinstance(artifact, Mapping) or artifact.get("mode") not in ("embedded", "reference-only"):
+                continue
+            name = str(plugin["name"])
+            if name not in installed:
+                continue
+            installed[name] = _verify_identity(temp_profile, plugin)
 
         pack_digest = sha256_bytes(plan.pack_path.read_bytes())
         final_profile = plan.profile_path
@@ -1025,7 +1181,7 @@ def import_pack(
         (plan.metadata_path / "manifest.json").write_bytes(json.dumps(data.manifest, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8") + b"\n")
         (plan.metadata_path / "plugins.lock.json").write_bytes(json.dumps(data.plugins_lock, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8") + b"\n")
         (plan.metadata_path / "prepared.json").write_bytes(
-            json.dumps(_metadata_payload(plan, data, tuple(installed), pack_digest), ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+            json.dumps(_metadata_payload(plan, data, tuple(installed.values()), pack_digest), ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8") + b"\n"
         )
         for backup in (original_profile_backup, original_metadata_backup):
             if backup is None:
@@ -1047,7 +1203,7 @@ def import_pack(
             profile_path=final_profile,
             metadata_path=plan.metadata_path,
             plan=plan,
-            installed_plugins=tuple(installed),
+            installed_plugins=tuple(installed.values()),
             network_installs=tuple(network_installs),
             warnings=tuple(warnings),
         )
@@ -1188,3 +1344,4 @@ def delete_profile(
         metadata_path=metadata_target,
         metadata_status=metadata_status,
     )
+
