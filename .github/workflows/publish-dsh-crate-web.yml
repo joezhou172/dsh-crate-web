@@ -3,7 +3,7 @@ name: Publish DSH Crate Web to npm
 on:
   push:
     tags:
-      - "dsh-crate-web-v*"
+      - "v*"
   workflow_dispatch:
     inputs:
       publish:
@@ -22,6 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
+        shell: bash
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -50,7 +51,7 @@ jobs:
           }
 
           if (process.env.RELEASE_REF_TYPE === 'tag') {
-            const prefix = 'dsh-crate-web-v'
+            const prefix = 'v'
             const tag = process.env.RELEASE_REF_NAME
             if (!tag.startsWith(prefix) || pkg.version !== tag.slice(prefix.length)) {
               throw new Error(`Package version ${pkg.version} does not match tag ${tag}`)
