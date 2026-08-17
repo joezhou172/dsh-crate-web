@@ -17,8 +17,16 @@ $tgz = Get-ChildItem -Path (Join-Path $payload "*.tgz") | Sort-Object LastWriteT
 if (-not $tgz) { throw "未生成 tgz" }
 Write-Host "==> 使用安装包: $($tgz.FullName)" -ForegroundColor Cyan
 
-$nsis = "C:\path\to\nsis\makensis.exe"
-if (-not (Test-Path $nsis)) { throw "未找到 NSIS: $nsis" }
+$nsis = $env:MAKENSIS
+if (-not $nsis) { $nsis = (Get-Command makensis -ErrorAction SilentlyContinue).Source }
+if (-not $nsis) {
+  $candidates = @(
+    "$env:ProgramFiles\NSIS\makensis.exe",
+    "$env:LOCALAPPDATA\Programs\NSIS\makensis.exe"
+  )
+  $nsis = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+if (-not $nsis) { throw "未找到 NSIS。请安装 NSIS 或设置 MAKENSIS 环境变量指向 makensis.exe" }
 
 Push-Location $PSScriptRoot
 try {

@@ -90,7 +90,7 @@ The public Preview should keep passing these gates:
 The public installation command is:
 
 ```powershell
-dsh plugin --profile web add dsh-crate-web@0.1.0
+dsh plugin --profile web add dsh-crate-web@0.1.1
 ```
 
 Local development and offline testing remain supported:
@@ -100,7 +100,7 @@ Local development and offline testing remain supported:
 dsh plugin --profile web add .
 
 # From a local .tgz artifact
-dsh plugin --profile web add .\dsh-crate-web-0.1.0.tgz
+dsh plugin --profile web add .\dsh-crate-web-0.1.1.tgz
 ```
 
 The plugin must be installed into the target DSH Profile. Do not use a global `npm install` for plugin deployment.
@@ -108,8 +108,8 @@ The plugin must be installed into the target DSH Profile. Do not use a global `n
 Publishing is performed by `.github/workflows/publish-dsh-crate-web.yml` with GitHub OIDC and npm provenance. A release tag is pushed with:
 
 ```powershell
-git tag dsh-crate-web-v0.1.0
-git push origin dsh-crate-web-v0.1.0
+git tag dsh-crate-web-v0.1.1
+git push origin dsh-crate-web-v0.1.1
 ```
 
 The workflow validates the package before running `npm publish --provenance --access public`.
@@ -588,7 +588,7 @@ DSH Crate 目前有两条互相连接的主线。
 正式安装命令：
 
 ```powershell
-dsh plugin --profile web add dsh-crate-web@0.1.0
+dsh plugin --profile web add dsh-crate-web@0.1.1
 ```
 
 本地开发和离线测试仍然支持：
@@ -598,7 +598,7 @@ dsh plugin --profile web add dsh-crate-web@0.1.0
 dsh plugin --profile web add .
 
 # 安装本地 .tgz 制品
-dsh plugin --profile web add .\dsh-crate-web-0.1.0.tgz
+dsh plugin --profile web add .\dsh-crate-web-0.1.1.tgz
 ```
 
 插件必须安装到目标 DSH Profile。不要使用全局 `npm install` 作为插件部署方式。
@@ -606,8 +606,8 @@ dsh plugin --profile web add .\dsh-crate-web-0.1.0.tgz
 发布由 `.github/workflows/publish-dsh-crate-web.yml` 使用 GitHub OIDC 和 npm provenance 完成。发布版本时执行：
 
 ```powershell
-git tag dsh-crate-web-v0.1.0
-git push origin dsh-crate-web-v0.1.0
+git tag dsh-crate-web-v0.1.1
+git push origin dsh-crate-web-v0.1.1
 ```
 
 Workflow 会先验证包内容，再执行 `npm publish --provenance --access public`。

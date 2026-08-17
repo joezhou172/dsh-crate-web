@@ -7,7 +7,7 @@ Unicode true
 !insertmacro GetOptions
 
 !ifndef VERSION
-  !define VERSION "0.1.0"
+  !define VERSION "0.1.1"
 !endif
 !ifndef CRATE_TGZ
   !error "构建时请通过 /DCRATE_TGZ=... 传入插件 tgz 路径"

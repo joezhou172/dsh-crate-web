@@ -132,8 +132,6 @@ function findCli(home) {
     process.env.APPDATA,
     homedir() && join(homedir(), "Desktop"),
     homedir() && join(homedir(), "Documents", "Codex"),
-    "H:\\Desktop",
-    "H:\\File\\.code",
   ]) {
     if (p && existsSync(p)) roots.push(p);
   }

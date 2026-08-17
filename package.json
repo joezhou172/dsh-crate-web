@@ -1,7 +1,7 @@
 {
   "name": "dsh-crate-web",
   "description": "DSH Web Settings surface for DSH Crate export, import, inspect, and history",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -69,5 +69,6 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/joezhou172/dsh-crate-web.git"
-  }
+  },
+  "author": "joezhou172 <rdhwhyhrg@163.com>"
 }

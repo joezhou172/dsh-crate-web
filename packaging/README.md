@@ -22,13 +22,13 @@ cd C:\path\to\repo\packaging
 
 ```powershell
 # 普通静默安装（自动检测 DSH 数据目录，完成后自动退出）
-.\dsh-crate-web-installer-0.1.0.exe /S
+.\dsh-crate-web-installer-0.1.1.exe /S
 
 # 指定 DSH 数据目录（/D= 必须是最后一个参数，不带引号）
-.\dsh-crate-web-installer-0.1.0.exe /S /D=C:\path\to\dsh
+.\dsh-crate-web-installer-0.1.1.exe /S /D=C:\path\to\dsh
 
 # 记录安装日志
-.\dsh-crate-web-installer-0.1.0.exe /S /LOG=C:\path\install.log
+.\dsh-crate-web-installer-0.1.1.exe /S /LOG=C:\path\install.log
 ```
 
 静默安装成功退出码为 0，失败为 1。
