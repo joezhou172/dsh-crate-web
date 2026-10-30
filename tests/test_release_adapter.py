@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'core'))
@@ -81,14 +82,17 @@ class BundledVerifyTests(unittest.TestCase):
         adapter._rpc.assert_not_called()
 
     def test_paid_or_retry_config_rejected_before_process_creation(self):
-        for config in [dict(modelRequests=1, automaticRetries=0), dict(modelRequests=0, automaticRetries=1)]:
-            with self.assertRaisesRegex(ValueError, 'zero model'):
-                DesktopVerifyAdapter({'mode': 'web', **config})
+        # 仅选择被测模块的 Windows 校验分支；不修改全局平台，也不调用原生 API。
+        with patch('dsh_pack.desktop_verify.os', SimpleNamespace(name='nt')):
+            for config in [dict(modelRequests=1, automaticRetries=0), dict(modelRequests=0, automaticRetries=1)]:
+                with self.assertRaisesRegex(ValueError, 'zero model'):
+                    DesktopVerifyAdapter({'mode': 'web', **config})
 
     def test_boot_cap_rejected(self):
-        for value in [0, 3, True]:
-            with self.assertRaisesRegex(ValueError, 'maximumBoots'):
-                DesktopVerifyAdapter(dict(mode='web', modelRequests=0, automaticRetries=0, maximumBoots=value))
+        with patch('dsh_pack.desktop_verify.os', SimpleNamespace(name='nt')):
+            for value in [0, 3, True]:
+                with self.assertRaisesRegex(ValueError, 'maximumBoots'):
+                    DesktopVerifyAdapter(dict(mode='web', modelRequests=0, automaticRetries=0, maximumBoots=value))
 
     def test_blank_session_reuse_is_real_official_semantics(self):
         from compression import zstd
