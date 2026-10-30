@@ -1,8 +1,8 @@
 # DSH Crate Diagnostic Codes
 
-> Generated from `core/dsh_pack/diagnostics.py` (schema v1, producer `dsh-crate`, crate 0.1.1). Do not edit by hand.
+> Generated from `core/dsh_pack/diagnostics.py` (schema v1, producer `dsh-crate`, crate 0.1.2-preview.1). Do not edit by hand.
 
-Total codes: **76**. Stages: **16**.
+Total codes: **79**. Stages: **16**.
 
 | Code | Stage | Severity | Repair | Write scope | Verify after | Summary |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -43,6 +43,7 @@ Total codes: **76**. Stages: **16**.
 | `OVERWRITE_CONFIRMATION_REQUIRED` | planning | BLOCKER | L2 | target-profile | yes | Overwrite requires explicit confirmation. |
 | `OVERWRITE_MODE_REQUIRED` | planning | BLOCKER | L2 | target-profile | yes | Overwrite mode is required. |
 | `PACKAGE_IDENTITY_DRIFT` | version-confirmation | BLOCKER | L1 | none | yes | Package identity drift. |
+| `PACKAGE_MANAGER_REQUIRED` | planning | BLOCKER | L0 | none | yes | 新建 Profile 需要正式包管理器。 |
 | `PACKAGE_MANIFEST_INVALID` | planning | BLOCKER | L1 | none | yes | Plugin package manifest is invalid. |
 | `PACKAGE_NAME_INVALID` | planning | BLOCKER | L1 | none | yes | Plugin package name is invalid. |
 | `PACK_READ_ERROR` | planning | BLOCKER | L1 | none | yes | Pack cannot be read. |
@@ -66,6 +67,8 @@ Total codes: **76**. Stages: **16**.
 | `PROFILE_NAME_RESERVED` | planning | BLOCKER | L1 | none | yes | Profile name is reserved. |
 | `PROFILE_NAME_UNAVAILABLE` | planning | BLOCKER | L1 | none | yes | Profile name is unavailable. |
 | `PROFILE_NOT_FOUND` | delete | BLOCKER | L1 | none | yes | Profile not found. |
+| `PROFILE_PATCH_ADAPTATION_FAILED` | configuration | BLOCKER | L0 | none | yes | 无法证明恢复配置与官方 Loader 配置等价。 |
+| `PROFILE_PATCH_ADAPTER_COMMAND_INVALID` | planning | BLOCKER | L0 | none | yes | 桌面配置适配器命令无效。 |
 | `PROFILE_TARGET_INVALID` | planning | BLOCKER | L1 | none | yes | Import target is invalid. |
 | `PROFILE_TARGET_MISSING` | planning | BLOCKER | L1 | none | yes | Import target is missing. |
 | `REQUIRED_ARTIFACT_MISSING` | reference-install | BLOCKER | L1 | temporary-profile | yes | Required artifact is missing. |

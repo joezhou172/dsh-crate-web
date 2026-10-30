@@ -9,18 +9,25 @@ or model interaction.  Without an adapter, runtime checks are UNTESTED.
 from __future__ import annotations
 
 import json
+import errno
+import ipaddress
 import os
 import posixpath
 import re
+import socket
 import subprocess
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from .diagnostics import decorate_issue
 from .errors import _default_checks
-from dataclasses import dataclass, field
+from .errors import DshPackError
+from .bundle import check_patch_declaration, read_bundle_patches
+from .identity import expected_install_version
+from .pack import sha256_bytes
+from .preflight import _artifact_package_identity
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
@@ -143,7 +150,9 @@ def _runtime_diagnostic(
     can_continue: bool = False,
 ) -> dict[str, Any]:
     """Structured diagnostic attached to a failed runtime VerifyStep."""
-    result = {
+    from .diagnostics import envelope_fields
+    return {
+        **envelope_fields(operation="verify", status="FAIL"),
         "code": code,
         "stage": stage,
         "severity": "BLOCKER",
@@ -156,12 +165,20 @@ def _runtime_diagnostic(
         "suggestedChecks": _default_checks(stage, code),
         "message": message,
     }
-    return decorate_issue(result, operation="verify", status="FAIL")
 
 
 def _normalise_observation(name: str, value: VerifyStep | Mapping[str, Any], *, required: bool) -> VerifyStep:
     if isinstance(value, VerifyStep):
-        return value
+        # 步骤身份和必测要求由 Core 决定；适配器标签不能绕过
+        # 前置失败，也不能弱化最终状态。保留适配器的原始证据。
+        return VerifyStep(
+            name=name,
+            status=value.status,
+            message=value.message,
+            required=required,
+            evidence=value.evidence,
+            diagnostic=value.diagnostic,
+        )
     if not isinstance(value, Mapping):
         return _step(
             name,
@@ -183,7 +200,7 @@ def _normalise_observation(name: str, value: VerifyStep | Mapping[str, Any], *, 
         name,
         status,
         str(value.get("message", name)),
-        required=bool(value.get("required", required)),
+        required=required,
         evidence=value.get("evidence") if isinstance(value.get("evidence"), Mapping) else {},
     )
 
@@ -225,85 +242,6 @@ def _profile_bundles(profile_manifest: Mapping[str, Any]) -> tuple[list[str] | N
     return list(bundles), None
 
 
-def _resolve_installed_package_dir(anchor_dir: Path, name: str) -> Path | None:
-    """Node-style node_modules lookup from an anchor directory.
-
-    Mirrors DSH ``packageDirFromAnchor`` (installation anchor, then the profile
-    directory): probes the profile-local ``node_modules``, the shared
-    ``profiles/node_modules`` layer, home-level ``node_modules``, then each
-    ancestor.  This matches what the Cordis Loader would import from the same
-    anchor.
-    """
-    parts = Path(*name.split("/"))
-    current = anchor_dir
-    while True:
-        candidate = current / "node_modules" / parts
-        if (candidate / "package.json").is_file():
-            return candidate
-        parent = current.parent
-        if parent == current:
-            return None
-        current = parent
-    return None
-
-
-def _internal_composition_issues(
-    profile_path: Path,
-    dependencies: Mapping[str, Any],
-    bundles: Sequence[str],
-) -> list[dict[str, Any]]:
-    """Verify a Profile against its own manifest when no Pack metadata exists.
-
-    Used when the Crate Import metadata directory for this Profile is absent
-    (the Profile was not created by a Crate Import, or the metadata was
-    removed).  This can never claim a Pack round-trip: it only checks that
-    declared Bundles are installed with their patch files, and that declared
-    dependencies resolve.  The caller marks the Pack-comparison dimension as
-    UNTESTED.
-    """
-    issues: list[dict[str, Any]] = []
-    declared = dict(dependencies) if isinstance(dependencies, Mapping) else {}
-    for name in bundles:
-        package_dir = _resolve_installed_package_dir(profile_path, name)
-        if package_dir is None:
-            issues.append({"code": "BUNDLE_NOT_INSTALLED", "bundle": name, "error": "not resolvable from the profile or shared node_modules layers"})
-            continue
-        installed, error = _json_object(package_dir / "package.json")
-        if installed is None:
-            issues.append({"code": "BUNDLE_NOT_INSTALLED", "bundle": name, "error": error})
-            continue
-        dsh = installed.get("dsh", {})
-        if not isinstance(dsh, Mapping):
-            dsh = {}
-        bundle = dsh.get("bundle", {})
-        patch = bundle.get("patch") if isinstance(bundle, Mapping) else None
-        normalized_patch = posixpath.normpath(patch.replace("\\", "/")) if isinstance(patch, str) else ""
-        safe_patch = (
-            normalized_patch not in {"", ".", ".."}
-            and not normalized_patch.startswith("../")
-            and not normalized_patch.startswith("/")
-            and ".." not in normalized_patch.split("/")
-        )
-        patch_path = package_dir / Path(*normalized_patch.split("/")) if safe_patch else None
-        if not isinstance(patch, str) or not patch.strip() or patch_path is None or not patch_path.is_file():
-            issues.append({
-                "code": "BUNDLE_PATCH_MISSING",
-                "bundle": name,
-                "patch": patch,
-                "path": str(patch_path) if patch_path else None,
-            })
-    for name, spec in declared.items():
-        package_dir = _resolve_installed_package_dir(profile_path, name)
-        if package_dir is None:
-            issues.append({
-                "code": "DEPENDENCY_NOT_INSTALLED",
-                "plugin": name,
-                "spec": spec,
-                "error": "not resolvable from the profile or shared node_modules layers",
-            })
-    return issues
-
-
 def _composition_step(options: "VerifyOptions") -> VerifyStep:
     profile_path = options.dsh_home / "profiles" / options.profile_name
     metadata_path = options.dsh_home / ".dsh-pack" / "imports" / options.profile_name
@@ -320,50 +258,9 @@ def _composition_step(options: "VerifyOptions") -> VerifyStep:
     if bundle_error or bundles is None:
         return _step("composition", "FAIL", bundle_error or "invalid Bundle composition", evidence={"path": str(package_path)})
 
-    manifest_file = metadata_path / "manifest.json"
-    lock_file = metadata_path / "plugins.lock.json"
-    prepared_file = metadata_path / "prepared.json"
-    metadata_present = metadata_path.is_dir() and any(
-        candidate.is_file() for candidate in (manifest_file, lock_file, prepared_file)
-    )
-    if not metadata_present:
-        # This Profile was not created by a Crate Import, or the Import
-        # metadata was removed.  The Pack-comparison dimension is UNTESTED:
-        # only an internal consistency check against the Profile's own
-        # manifest is possible, never a claimed round-trip.
-        dependencies = profile_manifest.get("dependencies", {})
-        if not isinstance(dependencies, Mapping):
-            return _step(
-                "composition",
-                "FAIL",
-                "Profile dependencies is not an object",
-                evidence={"path": str(package_path)},
-            )
-        internal_issues = _internal_composition_issues(profile_path, dependencies, bundles)
-        if internal_issues:
-            return _step(
-                "composition",
-                "FAIL",
-                "Crate Import metadata is absent and the Profile fails its internal consistency check",
-                evidence={
-                    "metadataPath": str(metadata_path),
-                    "packComparison": "UNTESTED",
-                    "issues": internal_issues,
-                },
-            )
-        return _step(
-            "composition",
-            "DEGRADED",
-            "Crate Import metadata is absent; only internal consistency was checked, Pack round-trip UNTESTED",
-            evidence={
-                "metadataPath": str(metadata_path),
-                "profileBundles": bundles,
-                "packComparison": "UNTESTED",
-            },
-        )
-    metadata_manifest, manifest_error = _json_object(manifest_file)
-    lock, lock_error = _json_object(lock_file)
-    prepared, prepared_error = _json_object(prepared_file)
+    metadata_manifest, manifest_error = _json_object(metadata_path / "manifest.json")
+    lock, lock_error = _json_object(metadata_path / "plugins.lock.json")
+    prepared, prepared_error = _json_object(metadata_path / "prepared.json")
     if manifest_error or lock_error or prepared_error or metadata_manifest is None or lock is None or prepared is None:
         return _step(
             "composition",
@@ -394,6 +291,40 @@ def _composition_step(options: "VerifyOptions") -> VerifyStep:
     expected_bundles: list[str] = []
     installed_rows: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
+    installation = prepared.get('installation')
+    rebuilt = isinstance(installation, Mapping) and installation.get('resolver') == 'pnpm'
+    original_dependencies = None
+    if rebuilt:
+        try:
+            original_bytes = (profile_path / '.dsh-crate/original-package.json').read_bytes()
+            if sha256_bytes(original_bytes) != installation.get('originalManifestSha256'):
+                raise ValueError('original manifest hash mismatch')
+            if sha256_bytes((profile_path / 'pnpm-workspace.yaml').read_bytes()) != installation.get('workspaceSha256'):
+                raise ValueError('generated installation workspace hash mismatch')
+            adaptation = installation.get('profilePatchAdaptation')
+            if isinstance(adaptation, Mapping) and adaptation.get('changed') is True:
+                if adaptation.get('adapter') != 'official-desktop-composition-equivalence-v1':
+                    raise ValueError('unsupported Profile patch adaptation identity')
+                if sha256_bytes((profile_path / '.dsh-crate/original-profile-config/cordis.patch.yml').read_bytes()) != adaptation.get('originalSha256'):
+                    raise ValueError('original Profile patch hash mismatch')
+                if sha256_bytes((profile_path / 'cordis.patch.yml').read_bytes()) != adaptation.get('runtimeSha256'):
+                    raise ValueError('adapted runtime Profile patch hash mismatch')
+                if not isinstance(adaptation.get('loaderTreeSha256'), str) or not re.fullmatch('[a-f0-9]{64}', adaptation['loaderTreeSha256']):
+                    raise ValueError('official Loader equivalence evidence is invalid')
+                removed = adaptation.get('removedNames')
+                if not isinstance(removed, list) or not removed or any(not isinstance(row, Mapping) or set(row) != {'id', 'name'} or not all(isinstance(value, str) and value for value in row.values()) for row in removed):
+                    raise ValueError('Profile patch adaptation record is invalid')
+            original_dependencies = json.loads(original_bytes).get('dependencies', {})
+            if not isinstance(original_dependencies, Mapping):
+                raise ValueError('original dependencies must be an object')
+            modules, error = _json_object(profile_path / 'node_modules/.modules.yaml')
+            if error or modules is None or modules.get('nodeLinker') != 'hoisted' or not (profile_path / 'pnpm-lock.yaml').is_file():
+                raise ValueError('pnpm installation records are incomplete')
+            store = modules.get('virtualStoreDir')
+            if not isinstance(store, str) or (profile_path / 'node_modules' / store).resolve() != (profile_path / 'node_modules/.pnpm').resolve():
+                raise ValueError('pnpm virtual store does not match the prepared Profile')
+        except (OSError, ValueError, TypeError) as error:
+            issues.append({'code': 'REBUILD_STATE_INVALID', 'message': str(error)})
     for index, plugin in enumerate(raw_plugins):
         name = plugin.get("name")
         if not isinstance(name, str) or not name:
@@ -401,10 +332,35 @@ def _composition_step(options: "VerifyOptions") -> VerifyStep:
             continue
         requested = plugin.get("requested")
         requested_specifier = requested.get("specifier") if isinstance(requested, Mapping) else None
-        resolved = plugin.get("resolved")
-        resolved_version = resolved.get("version") if isinstance(resolved, Mapping) else None
+        resolved_version = expected_install_version(plugin)
         declared_spec = dependencies.get(name)
-        if declared_spec is not None and declared_spec != requested_specifier:
+        installed, installed_error = _package_manifest(profile_path, name)
+        prepared_names = {row.get('name') for row in prepared.get('plugins', []) if isinstance(row, Mapping)}
+        skipped_optional = plugin.get('required') is not True and name not in prepared_names and installed is None and declared_spec is None
+        if rebuilt and not skipped_optional:
+            try:
+                requests = installation.get('requests', {})
+                spec = requests.get(name) if isinstance(requests, Mapping) else None
+                match = re.fullmatch(r'file:\./\.dsh-crate/artifacts/([0-9a-f]{64})\.tgz', spec or '')
+                if not match or declared_spec != spec:
+                    raise ValueError('local artifact dependency mapping mismatch')
+                if original_dependencies is None or original_dependencies.get(name, 'unknown') != requested_specifier:
+                    raise ValueError('original Profile SPEC does not match plugins.lock')
+                artifact = plugin.get('artifact', {})
+                if artifact.get('mode') == 'embedded' and artifact.get('sha256') != match[1]:
+                    raise ValueError('embedded artifact mapping differs from plugins.lock hash')
+                path = profile_path / '.dsh-crate/artifacts' / (match[1] + '.tgz')
+                if path.is_symlink() or path.resolve().parent != (profile_path / '.dsh-crate/artifacts').resolve():
+                    raise ValueError('artifact path escapes the prepared Profile')
+                content = path.read_bytes()
+                if sha256_bytes(content) != match[1]:
+                    raise ValueError('local rebuild artifact hash mismatch')
+                identity = _artifact_package_identity(content)
+                if identity != {'name': name, 'version': resolved_version}:
+                    raise ValueError('local rebuild artifact identity mismatch')
+            except (OSError, ValueError, TypeError) as error:
+                issues.append({'code': 'REBUILD_ARTIFACT_INVALID', 'plugin': name, 'message': str(error)})
+        elif declared_spec is not None and declared_spec != requested_specifier:
             issues.append({
                 "code": "PROFILE_SPEC_MISMATCH",
                 "plugin": name,
@@ -415,24 +371,20 @@ def _composition_step(options: "VerifyOptions") -> VerifyStep:
         enabled = isinstance(bundle, Mapping) and bundle.get("enabled") is True
         if enabled:
             expected_bundles.append(name)
+        if enabled and not skipped_optional:
             patch = bundle.get("patch")
             package_path_for_plugin = profile_path / "node_modules" / Path(*name.split("/"))
-            normalized_patch = posixpath.normpath(patch.replace("\\", "/")) if isinstance(patch, str) else ""
-            safe_patch = (
-                normalized_patch not in {"", ".", ".."}
-                and not normalized_patch.startswith("../")
-                and not normalized_patch.startswith("/")
-                and ".." not in normalized_patch.split("/")
-            )
-            patch_path = package_path_for_plugin / Path(*normalized_patch.split("/")) if safe_patch else None
-            if not isinstance(patch, str) or not patch.strip() or patch_path is None or not patch_path.is_file():
+            try:
+                read_bundle_patches(package_path_for_plugin, patch)
+                if installed is not None:
+                    check_patch_declaration(installed, patch)
+            except DshPackError as error:
                 issues.append({
-                    "code": "BUNDLE_PATCH_MISSING",
+                    "code": "BUNDLE_PATCH_INVALID",
                     "plugin": name,
                     "patch": patch,
-                    "path": str(patch_path) if patch_path else None,
+                    "error": str(error),
                 })
-        installed, installed_error = _package_manifest(profile_path, name)
         installed_row = {
             "name": name,
             "required": plugin.get("required") is True,
@@ -514,6 +466,7 @@ class VerifyResult:
     available_secret_names: frozenset[str]
     steps: tuple[VerifyStep, ...]
     plugin_contracts: tuple[SmokeTestContract, ...]
+    business_status: str | None = None
 
     def __post_init__(self) -> None:
         if self.status not in VERIFY_STATUSES:
@@ -528,6 +481,8 @@ class VerifyResult:
         ]
         return {
             "status": self.status,
+            "businessStatus": self.business_status or self.status,
+            "cleanup": step_map.get("cleanup"),
             "profile": {
                 "name": self.profile_name,
                 "dshHome": str(self.dsh_home),
@@ -569,6 +524,73 @@ def _overall_status(steps: Sequence[VerifyStep]) -> str:
     return "PASS"
 
 
+def _cleanup_status(evidence: Mapping[str, Any]) -> str:
+    """缺失证据不能当作释放成功；此前失败的清理也不能被末次成功遮蔽。"""
+    attempts = evidence.get("attempts", [])
+    if isinstance(attempts, list) and any(
+        isinstance(item, Mapping) and _cleanup_status(item) == "FAIL" for item in attempts
+    ):
+        return "FAIL"
+    endpoints = evidence.get("endpoints", [])
+    endpoints = endpoints if isinstance(endpoints, list) else []
+    if (evidence.get("status") == "FAIL" or evidence.get("errors") or evidence.get("processExited") is False
+            or evidence.get("portReleased") is False
+            or any(isinstance(item, Mapping) and item.get("released") is False for item in endpoints)):
+        return "FAIL"
+    if evidence.get("processExited") is not True:
+        return "UNTESTED"
+    if evidence.get("portApplicable") is not False and evidence.get("portReleased") is not True:
+        return "UNTESTED"
+    if evidence.get("portApplicable") is not False and (
+        not isinstance(evidence.get("portEvidence"), Mapping)
+        or evidence["portEvidence"].get("checked") is not True
+    ):
+        return "UNTESTED"
+    if evidence.get("endpointsApplicable") is not False and (
+        not endpoints or any(not isinstance(item, Mapping) or item.get("checked") is not True
+                             or item.get("released") is not True for item in endpoints)
+    ):
+        return "UNTESTED"
+    if isinstance(attempts, list) and any(
+        not isinstance(item, Mapping) or _cleanup_status(item) != "PASS" for item in attempts
+    ):
+        return "UNTESTED"
+    return "PASS"
+
+
+def _cleanup_step(adapter: VerifyAdapter | None) -> VerifyStep:
+    close = getattr(adapter, "close", None)
+    if not callable(close):
+        return _step("cleanup", "UNTESTED", "未提供可核查的最终清理接口",
+                     evidence={"processExited": None, "portReleased": None, "endpoints": [],
+                               "reason": "VerifyAdapter has no close implementation"})
+    try:
+        value = close()
+    except Exception as error:
+        evidence = {"processExited": None, "portReleased": None, "endpoints": [],
+                    "error": str(error), "exception": type(error).__name__}
+        return _step("cleanup", "FAIL", "最终清理抛出异常；原业务步骤和诊断已保留", evidence=evidence,
+                     diagnostic=_runtime_diagnostic(
+                         code="VERIFY_CLEANUP_EXCEPTION", stage="cleanup", message="最终清理抛出异常",
+                         evidence=evidence, item="cleanup", expected="清理完成并返回资源释放证据",
+                         impact="无法确认验证资源已释放；请检查 cleanup 证据中的进程和端点。"))
+    evidence = dict(value) if isinstance(value, Mapping) else {
+        "processExited": None, "portReleased": None, "endpoints": [],
+        "reason": "close returned no resource evidence"}
+    status = _cleanup_status(evidence)
+    diagnostic = None
+    if status != "PASS":
+        diagnostic = _runtime_diagnostic(
+            code="VERIFY_CLEANUP_FAILED" if status == "FAIL" else "VERIFY_CLEANUP_UNVERIFIED",
+            stage="cleanup", message="最终清理失败" if status == "FAIL" else "最终清理证据不足",
+            evidence=evidence, item="cleanup", expected="已观察进程、端口和端点均有释放证据",
+            impact="原业务步骤和诊断已保留；资源释放状态请单独检查。")
+    return _step("cleanup", status,
+                 {"PASS": "已核查所记录资源的释放", "FAIL": "清理失败；原业务步骤和诊断已保留",
+                  "UNTESTED": "清理证据不足；未将未知状态判为成功"}[status],
+                 evidence=evidence, diagnostic=diagnostic)
+
+
 def _loader_composition_failure(composition: VerifyStep, boot: VerifyStep) -> dict[str, Any] | None:
     """Classify a real DSH Loader activation failure as composition failure.
 
@@ -595,22 +617,38 @@ def _loader_composition_failure(composition: VerifyStep, boot: VerifyStep) -> di
     if not any(marker in lowered for marker in markers):
         return None
 
-    failed_bundle: str | None = None
+    # 只接受失败行明确命名的条目；全局启动日志和安装顺序不能证明归属。
+    # 运行条目可能是未直接列在 Bundle 清单中的包或 subpath，必须保留原名。
+    target_pattern = re.compile(
+        r"(?P<marker>plugin tree failed to load\s*:\s*|failed to apply loader entry\s+|did not activate\s+)"
+        r"[`\"']?(?P<target>(?:@[\w.-]+/)?[\w.-]+(?:/[\w.-]+)*)[`\"']?(?=\s*(?::|$))",
+        re.IGNORECASE,
+    )
     installed_plugins = composition.evidence.get("installedPlugins", [])
-    if isinstance(installed_plugins, list):
-        for row in installed_plugins:
-            if not isinstance(row, Mapping):
+    installed_names = {
+        row["name"] for row in installed_plugins
+        if isinstance(row, Mapping) and isinstance(row.get("name"), str) and row["name"]
+    } if isinstance(installed_plugins, list) else set()
+    failed_targets: set[str] = set()
+    for line in combined.splitlines():
+        if not any(marker in line.lower() for marker in markers):
+            continue
+        for match in target_pattern.finditer(line):
+            target = match.group("target")
+            if target.lower() in {"error", "typeerror", "rangeerror", "exception"}:
                 continue
-            name = row.get("name")
-            if not isinstance(name, str) or not name:
-                continue
-            if name in combined:
-                failed_bundle = name
-                break
-    if failed_bundle is None:
-        match = re.search(r"(?:failed to apply loader entry|did not activate)\s+([^\s:(]+)", combined, re.IGNORECASE)
-        if match:
-            failed_bundle = match.group(1)
+            # 泛化的等待失败文案不是 Loader 证据；只有明确包名才可归属。
+            if match.group("marker").lower().startswith("did not activate"):
+                if not (target.startswith("@") or any(target == name or target.startswith(name + "/") for name in installed_names)):
+                    continue
+            failed_targets.add(target)
+        for name in installed_names:
+            if re.search(r"(?<![\w@./-])" + re.escape(name) + r"\s+did not activate\b", line, re.IGNORECASE):
+                failed_targets.add(name)
+    has_loader_failure = any(marker in lowered for marker in markers if marker != "did not activate")
+    if not has_loader_failure and not failed_targets:
+        return None
+    failed_bundle = next(iter(failed_targets)) if len(failed_targets) == 1 else None
 
     observed = "Loader activation failed" if "loader activation failed" in lowered else "DSH Loader activation failed"
     return {
@@ -696,6 +734,15 @@ def _plugin_step(
         )
 
 
+def _runtime_blocker(steps: list[VerifyStep]) -> str | None:
+    """Preserve the first failure; never probe or restart past missing startup evidence."""
+    runtime_names = {name for name, _ in RUNTIME_STEPS}
+    prerequisites = {"boot", "surface_ready", "restart", "restart_surface_ready"}
+    return next((step.name for step in steps if step.name in runtime_names
+                 and (step.status == "FAIL" or (step.name in prerequisites
+                      and step.status not in {"PASS", "DEGRADED"}))), None)
+
+
 def verify_profile(options: VerifyOptions) -> VerifyResult:
     """Verify one prepared Profile without changing its files."""
 
@@ -709,8 +756,10 @@ def verify_profile(options: VerifyOptions) -> VerifyResult:
             available_secret_names=options.available_secret_names,
             steps=(_step("composition", "FAIL", "DSH_HOME does not exist", evidence={"dshHome": str(options.dsh_home)}),),
             plugin_contracts=options.plugin_contracts,
+            business_status="FAIL",
         )
-        return result
+        cleanup = _cleanup_step(options.adapter)
+        return replace(result, steps=(*result.steps, cleanup))
 
     composition = _composition_step(options)
     steps: list[VerifyStep] = [composition]
@@ -726,10 +775,7 @@ def verify_profile(options: VerifyOptions) -> VerifyResult:
     }
 
     for name, label in RUNTIME_STEPS:
-        blocking_runtime_step = next(
-            (step.name for step in steps if step.name in {"boot", "restart"} and step.status == "FAIL"),
-            None,
-        )
+        blocking_runtime_step = _runtime_blocker(steps)
         if composition.status == "FAIL":
             current = _step(
                 name,
@@ -741,7 +787,7 @@ def verify_profile(options: VerifyOptions) -> VerifyResult:
             current = _step(
                 name,
                 "UNTESTED",
-                f"{label} was not run because an earlier runtime step failed",
+                f"{label} was not run because an earlier runtime prerequisite did not pass",
                 evidence={"blockedBy": blocking_runtime_step},
             )
         else:
@@ -750,10 +796,49 @@ def verify_profile(options: VerifyOptions) -> VerifyResult:
         steps.append(current)
         previous[current.name] = current
 
-    for contract in options.plugin_contracts:
-        for test_name in contract.tests:
-            context = VerifyContext(previous_steps=dict(previous), **context_base)
-            current = _plugin_step(options.adapter, contract, test_name, context)
+    # The imported lock, rather than the caller's contract list, defines which
+    # plugin capabilities must be accounted for. A missing or empty contract
+    # is explicit missing evidence, never an implicit successful smoke test.
+    imported_plugins = composition.evidence.get("installedPlugins", [])
+    imported_required = {
+        row["name"]: row.get("required") is True
+        for row in imported_plugins
+        if isinstance(row, Mapping) and isinstance(row.get("name"), str)
+    } if isinstance(imported_plugins, list) else {}
+    contracts = [
+        SmokeTestContract(
+            plugin=contract.plugin,
+            tests=tuple(test for test in contract.tests if isinstance(test, str) and test.strip()),
+            required=contract.required or imported_required.get(contract.plugin, False),
+        )
+        for contract in options.plugin_contracts
+    ]
+    covered_plugins = {contract.plugin for contract in contracts}
+    contracts.extend(
+        SmokeTestContract(plugin=name, tests=(), required=required)
+        for name, required in imported_required.items()
+        if name not in covered_plugins
+    )
+    blocking_plugin_step = ("composition" if composition.status not in {"PASS", "DEGRADED"}
+                            else _runtime_blocker(steps))
+    for contract in contracts:
+        for test_name in contract.tests or (None,):
+            step_name = f"plugin:{contract.plugin}:{test_name or 'untested'}"
+            if blocking_plugin_step is not None:
+                current = _step(
+                    step_name, "UNTESTED", "Plugin smoke test was not run because runtime prerequisites did not pass",
+                    required=contract.required,
+                    evidence={"plugin": contract.plugin, "test": test_name, "blockedBy": blocking_plugin_step},
+                )
+            elif test_name is None:
+                current = _step(
+                    step_name, "UNTESTED", "Imported plugin has no non-empty dedicated smoke-test contract",
+                    required=contract.required,
+                    evidence={"plugin": contract.plugin, "test": None, "reason": "missing smoke-test contract"},
+                )
+            else:
+                context = VerifyContext(previous_steps=dict(previous), **context_base)
+                current = _plugin_step(options.adapter, contract, test_name, context)
             steps.append(current)
             previous[current.name] = current
 
@@ -775,6 +860,8 @@ def verify_profile(options: VerifyOptions) -> VerifyResult:
         )
         steps[0] = composition
 
+    business_status = _overall_status(steps)
+    steps.append(_cleanup_step(options.adapter))
     result = VerifyResult(
         status=_overall_status(steps),
         dsh_home=options.dsh_home,
@@ -783,16 +870,9 @@ def verify_profile(options: VerifyOptions) -> VerifyResult:
         current_environment=options.current_environment,
         available_secret_names=options.available_secret_names,
         steps=tuple(steps),
-        plugin_contracts=options.plugin_contracts,
+        plugin_contracts=tuple(contracts),
+        business_status=business_status,
     )
-    close = getattr(options.adapter, "close", None)
-    if callable(close):
-        try:
-            close()
-        except Exception:
-            # Runtime cleanup evidence belongs to the adapter; do not replace
-            # the actual verification result with a cleanup exception.
-            pass
     return result
 
 
@@ -828,6 +908,8 @@ class SubprocessVerifyAdapter:
         self._threads: list[threading.Thread] = []
         self._url: str | None = None
         self._last_headless: dict[str, Any] | None = None
+        self._cleanup_attempts: list[dict[str, Any]] = []
+        self._last_cleanup: dict[str, Any] | None = None
 
     def _timeout(self) -> float:
         value = self.config.get("timeoutSeconds", 60)
@@ -851,13 +933,16 @@ class SubprocessVerifyAdapter:
 
     def _environment(self, context: VerifyContext) -> dict[str, str]:
         env = dict(os.environ) if self.config.get("inheritEnvironment", True) is not False else {}
-        env["DSH_HOME"] = str(context.dsh_home)
-        env["DSH_PROFILE"] = context.profile_name
         if self._url:
             env["DSH_WEB_URL"] = self._url
         extra = self.config.get("environment", {})
         if isinstance(extra, Mapping):
             env.update({str(key): str(value) for key, value in extra.items()})
+        # Windows environment names are case-insensitive. Remove all inherited
+        # and configured aliases before assigning the actual isolated target.
+        env = {key: value for key, value in env.items() if key.upper() not in {"DSH_HOME", "DSH_PROFILE"}}
+        env["DSH_HOME"] = str(context.dsh_home)
+        env["DSH_PROFILE"] = context.profile_name
         return env
 
     @staticmethod
@@ -1178,6 +1263,9 @@ class SubprocessVerifyAdapter:
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             return {"checked": False, "portOwnerPid": None, "portBelongsToProcess": False, "ownershipError": str(error)}
+        if completed.returncode != 0:
+            return {"checked": False, "portOwnerPid": None, "portBelongsToProcess": False,
+                    "ownershipError": "netstat failed", "exitCode": completed.returncode}
         port_owner: int | None = None
         for line in completed.stdout.splitlines():
             fields = line.split()
@@ -1207,7 +1295,10 @@ class SubprocessVerifyAdapter:
             restarted = self._run_headless(context, step) if self.mode == "headless" else self._rename(self._spawn_web(context), step)
             evidence = dict(restarted.evidence)
             evidence["stoppedProcess"] = stopped
-            if restarted.status == "PASS" and stopped.get("portReleased") is not True:
+            # 已完成的headless命令没有Web端口；不适用不是“释放未知”。
+            no_web_port = (self.mode == "headless" and stopped.get("processExited") is True
+                           and stopped.get("portApplicable") is False)
+            if restarted.status == "PASS" and stopped.get("portReleased") is not True and not no_web_port:
                 return _step(
                     step,
                     "FAIL",
@@ -1285,47 +1376,103 @@ class SubprocessVerifyAdapter:
             ),
         )
 
+    @staticmethod
+    def _endpoint_release(url: str) -> dict[str, Any]:
+        """只核查已观察的本地 TCP 端点；拒绝连接才证明监听已释放。"""
+        evidence: dict[str, Any] = {"checked": False, "released": None, "transport": "tcp"}
+        try:
+            parsed = urllib.parse.urlparse(url)
+            address = ipaddress.ip_address(parsed.hostname or "")
+            if not address.is_loopback or parsed.port is None:
+                raise ValueError("only explicit loopback endpoints with a port are checked")
+            evidence.update({"url": f"{parsed.scheme}://{'[' + str(address) + ']' if address.version == 6 else address}:{parsed.port}",
+                             "host": str(address), "port": parsed.port})
+            with socket.socket(socket.AF_INET6 if address.version == 6 else socket.AF_INET, socket.SOCK_STREAM) as client:
+                client.settimeout(0.3)
+                code = client.connect_ex((str(address), parsed.port))
+            evidence["socketError"] = code
+            if code == 0:
+                evidence.update(checked=True, released=False)
+            elif code in {errno.ECONNREFUSED, 10061}:
+                evidence.update(checked=True, released=True)
+            else:
+                evidence["reason"] = "连接结果不能证明端点已释放"
+        except (OSError, ValueError) as error:
+            evidence["reason"] = str(error)
+        return evidence
+
     def close(self) -> dict[str, Any]:
         process = self.process
         url = self._url
         if process is None:
-            return {"pid": None, "url": url, "processExited": True, "portReleased": True, "reason": "no persistent process"}
+            if self._last_cleanup is not None:
+                return self._last_cleanup
+            completed = self._last_headless is not None
+            return {"pid": None, "url": None, "processExited": True if completed else None,
+                    "exitCode": self._last_headless.get("exitCode") if completed else None,
+                    "portReleased": None, "portApplicable": False, "endpointsApplicable": False,
+                    "endpoints": [], "attempts": [],
+                    "reason": "headless subprocess.run completed" if completed else "no runtime process was observed"}
         pid = process.pid
-        if process.poll() is None:
-            process.terminate()
+        actions: list[str] = []
+        errors: list[dict[str, str]] = []
+        exit_code = None
+        try:
+            if process.poll() is None:
+                actions.append("terminate")
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    actions.append("kill")
+                    process.kill()
+                    process.wait(timeout=5)
+            exit_code = process.poll()
+        except Exception as error:
+            errors.append({"operation": "stop-process", "error": str(error), "exception": type(error).__name__})
             try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
-        exit_code = process.poll()
-        port_evidence: dict[str, Any] = {"checked": True, "portOwnerPid": None, "portBelongsToProcess": False}
-        port_released = True
+                exit_code = process.poll()
+            except Exception as poll_error:
+                errors.append({"operation": "poll-process", "error": str(poll_error), "exception": type(poll_error).__name__})
+        port_evidence: dict[str, Any] = {"checked": False, "reason": "no observed Web URL"}
+        port_released: bool | None = None
+        endpoints: list[dict[str, Any]] = []
         if self.mode == "web" and url:
             deadline = time.monotonic() + 2.0
             while True:
-                port_evidence = self._port_owner_for(url, pid)
+                try:
+                    port_evidence = self._port_owner_for(url, pid)
+                except Exception as error:
+                    port_evidence = {"checked": False, "ownershipError": str(error)}
+                endpoints = [{"url": url, **self._endpoint_release(url)}]
                 if port_evidence.get("checked") is not True:
-                    port_released = False
+                    port_released = None
                     break
-                if port_evidence.get("portOwnerPid") is None:
-                    port_released = True
+                port_released = port_evidence.get("portOwnerPid") is None
+                if port_released and endpoints[0].get("released") is True:
                     break
                 if time.monotonic() >= deadline:
-                    port_released = False
                     break
                 time.sleep(0.05)
+        for thread in self._threads:
+            thread.join(timeout=1)
         evidence = {
             "pid": pid,
             "url": url,
             "exitCode": exit_code,
-            "processExited": process.poll() is not None,
+            "processExited": True if exit_code is not None else (False if not errors else None),
             "portReleased": port_released,
             "portEvidence": port_evidence,
+            "portApplicable": self.mode == "web", "endpointsApplicable": self.mode == "web",
+            "endpoints": endpoints,
+            "endpointCoverage": "observed-web-url-only; Inspector/PTY/unknown descendants are not inferred",
+            "actions": actions, "errors": errors,
         }
+        self._cleanup_attempts.append(evidence)
+        self._last_cleanup = {**evidence, "attempts": list(self._cleanup_attempts)}
         self.process = None
         self._url = None
-        return evidence
+        return self._last_cleanup
 
 
 def load_smoke_contracts(path: str | os.PathLike[str]) -> tuple[SmokeTestContract, ...]:

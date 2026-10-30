@@ -2,170 +2,117 @@ name: Publish DSH Crate Web to npm
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "src/**"
+      - "core/**"
+      - "lib/**"
+      - "skills/**"
+      - "runtime/**"
+      - "package.json"
+      - "cordis.patch.yml"
+      - "*.mjs"
+      - "README*"
+      - "scripts/release_*.py"
+      - "scripts/npm-release.mjs"
+      - "tests/test_release*.py"
+      - ".github/workflows/publish-dsh-crate-web.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "core/**"
+      - "lib/**"
+      - "skills/**"
+      - "runtime/**"
+      - "package.json"
+      - "cordis.patch.yml"
+      - "*.mjs"
+      - "README*"
+      - "scripts/release_*.py"
+      - "scripts/npm-release.mjs"
+      - "tests/test_release*.py"
+      - ".github/workflows/publish-dsh-crate-web.yml"
   workflow_dispatch:
     inputs:
       publish:
-        description: "Publish to npm using Trusted Publishing"
+        description: "实际发布 Preview；关闭时只检查和上传检查制品"
         required: true
         default: false
         type: boolean
 
 permissions:
   contents: read
-  id-token: write
+
+concurrency:
+  group: crate-npm-${{ github.event_name == 'pull_request' && github.ref || 'release' }}
+  cancel-in-progress: false
 
 jobs:
   validate-package:
-    name: Validate npm package
+    name: 检查隐私与最终 npm 制品
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash
+    outputs:
+      sha256: ${{ steps.package.outputs.sha256 }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: "24"
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
-
-      - name: Validate package metadata and release tag
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: 校验发布规则
         env:
           RELEASE_REF_TYPE: ${{ github.ref_type }}
           RELEASE_REF_NAME: ${{ github.ref_name }}
         run: |
-          node <<'NODE'
-          const fs = require('node:fs')
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
-
-          if (pkg.name !== 'dsh-crate-web') {
-            throw new Error(`Unexpected package name: ${pkg.name}`)
-          }
-          if (pkg.publishConfig?.access !== 'public') {
-            throw new Error('The package must declare publishConfig.access=public')
-          }
-
-          if (process.env.RELEASE_REF_TYPE === 'tag') {
-            const prefix = 'v'
-            const tag = process.env.RELEASE_REF_NAME
-            if (!tag.startsWith(prefix) || pkg.version !== tag.slice(prefix.length)) {
-              throw new Error(`Package version ${pkg.version} does not match tag ${tag}`)
-            }
-          }
-          NODE
-
-      - name: Inspect packed file list
-        run: npm pack --dry-run --json > pack-manifest.json
-
-      - name: Reject incomplete or unsafe package contents
-        run: |
-          node <<'NODE'
-          const fs = require('node:fs')
-          const report = JSON.parse(fs.readFileSync('pack-manifest.json', 'utf8'))[0]
-          const files = report.files.map((entry) => entry.path)
-          const required = [
-            'package.json',
-            'cordis.patch.yml',
-            'lib/index.js',
-            'lib/client.js',
-            'core/dsh_pack/importer.py',
-            'runtime/python/python.exe',
-          ]
-          const missing = required.filter((file) => !files.includes(file))
-          const forbidden = files.filter((file) =>
-            /(^|\/)(node_modules|__pycache__)(\/|$)|\.py[co]$|(^|\/)(\.env|.*secret.*)$/i.test(file),
-          )
-
-          if (missing.length) throw new Error(`Missing package files: ${missing.join(', ')}`)
-          if (forbidden.length) throw new Error(`Forbidden package files: ${forbidden.join(', ')}`)
-          console.log(JSON.stringify({
-            package: report.id,
-            fileCount: files.length,
-            packedSize: report.size,
-          }, null, 2))
-          NODE
-
-  validate-skill:
-    name: Validate versioned Troubleshooting Skill
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Validate skill reference is current
-        run: |
+          python scripts/release_policy.py
           python scripts/generate-skill-reference.py
           git diff --exit-code -- skills/
-
-      - name: Validate version alignment
+          python scripts/test-local.py --pattern 'test_release*.py'
+          python scripts/test-local.py -- python skills/dsh-crate-troubleshooting/tests/run_tests.py
+      - name: 扫描实际提交；命中只报告位置
+        run: python scripts/release_guard.py git --revision HEAD
+      - name: 生成并检查唯一发布制品
+        id: package
         run: |
-          node <<'NODE'
-          const fs = require('node:fs')
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
-          const match = fs.readFileSync('core/dsh_pack/_version.py', 'utf8').match(/__version__\s*=\s*["']([^"']+)["']/)
-          if (!match) throw new Error('core/dsh_pack/_version.py has no __version__')
-          if (pkg.version !== match[1]) {
-            throw new Error(`package.json version ${pkg.version} != core/dsh_pack/_version.py ${match[1]}`)
-          }
-          const compat = JSON.parse(fs.readFileSync('skills/dsh-crate-troubleshooting/compatibility.json', 'utf8'))
-          if (compat.skillVersion !== pkg.version) {
-            throw new Error(`compatibility.json skillVersion ${compat.skillVersion} != package.json version ${pkg.version}`)
-          }
-          console.log(`versions aligned: ${pkg.version}`)
-          NODE
-
-      - name: Run Skill test set T1-T16
-        run: python skills/dsh-crate-troubleshooting/tests/run_tests.py
+          mkdir release
+          npm pack . --ignore-scripts --json --pack-destination ./release > release/npm-pack.json
+          python scripts/release_policy.py --pack-report release/npm-pack.json --output release/audit.json --github-output "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crate-npm-preview
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
 
   publish:
-    name: Publish with npm Trusted Publishing
-    needs: [validate-package, validate-skill]
+    name: 发布经过检查的 Preview
+    needs: validate-package
     if: >-
-      (github.event_name == 'push' && github.ref_type == 'tag') ||
+      (github.event_name == 'push') ||
       (github.event_name == 'workflow_dispatch' && inputs.publish == true)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: "24"
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
-
-      - name: Stamp repository metadata for provenance
+      - uses: actions/download-artifact@v4
+        with:
+          name: crate-npm-preview
+          path: release
+      - name: 校验哈希并使用 OIDC 发布；已存在的相同制品跳过
         env:
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          node <<'NODE'
-          const fs = require('node:fs')
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
-          pkg.repository = {
-            type: 'git',
-            url: `https://github.com/${process.env.GITHUB_REPOSITORY}.git`,
-          }
-          fs.writeFileSync('package.json', `${JSON.stringify(pkg, null, 2)}\n`)
-          NODE
-
-      - name: Publish public package with provenance
-        run: npm publish --provenance --access public
+          EXPECTED_SHA256: ${{ needs.validate-package.outputs.sha256 }}
+          # 私有仓库不支持 npm provenance；这不关闭 OIDC 身份认证。
+          NPM_CONFIG_PROVENANCE: ${{ github.event.repository.private == false }}
+        run: node scripts/npm-release.mjs release

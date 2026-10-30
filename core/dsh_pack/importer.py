@@ -12,7 +12,10 @@ are disabled.
 from __future__ import annotations
 
 import json
+import base64
 import os
+import posixpath
+import re
 import shutil
 import subprocess
 import tarfile
@@ -26,8 +29,10 @@ from typing import Any, Callable, Mapping
 from .errors import DshPackError, PackImportError
 from .pack import PackData, read, sha256_bytes
 from .network import npm_install_specifier
+from .identity import expected_install_version, unknown_source
 from .preflight import PreflightContext, PreflightResult, inspect_pack
-from .validation import validate_archive_path
+from .validation import validate_archive_path, bundle_patch_paths
+from .bundle import check_patch_declaration, read_bundle_patches
 
 
 ReferenceInstaller = Callable[[Path, Mapping[str, Any]], None]
@@ -45,6 +50,9 @@ class ImportOptions:
     reference_installer: ReferenceInstaller | None = None
     allow_network_reference_install: bool = True
     npm_command: str | None = None
+    pnpm_command: tuple[str, ...] | None = None
+    host_bundles: Mapping[str, Any] | None = None
+    patch_adapter_command: tuple[str, ...] | None = None
     network_install_timeout: int = 180
     target_profile_name: str | None = None
     overwrite_existing_profile: bool = False
@@ -66,6 +74,8 @@ class ImportPlan:
     embedded_plugins: tuple[dict[str, Any], ...]
     reference_plugins: tuple[dict[str, Any], ...]
     preflight: PreflightResult
+    portable_data: tuple[str, ...] = ()
+    host_provided_dependencies: tuple[dict[str, Any], ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -80,6 +90,8 @@ class ImportPlan:
             "embeddedPlugins": list(self.embedded_plugins),
             "referencePlugins": list(self.reference_plugins),
             "preflight": self.preflight.as_dict(),
+            "portableData": list(self.portable_data),
+            "hostProvidedDependencies": list(self.host_provided_dependencies),
             "decision": "READY_TO_IMPORT" if self.preflight.status == "READY" else "NOT_READY",
         }
 
@@ -269,9 +281,9 @@ def _reference_plugin_requirements(data: PackData) -> dict[str, str | None]:
         name = plugin.get("name")
         if not isinstance(artifact, Mapping) or artifact.get("mode") != "reference-only" or not isinstance(name, str):
             continue
-        resolved = plugin.get("resolved")
-        version = resolved.get("version") if isinstance(resolved, Mapping) else None
-        requirements[name] = version if isinstance(version, str) else None
+        if unknown_source(plugin):
+            continue  # Unknown source requires an explicit, checked local path.
+        requirements[name] = expected_install_version(plugin)
     return requirements
 
 
@@ -470,142 +482,18 @@ def _install_network_reference(profile_path: Path, plugin: Mapping[str, Any], op
     }
 
 
-def _manifest_declares_workspace(content: bytes) -> bool:
-    """Return True when an embedded tarball uses the workspace: protocol.
-
-    Workspace-protocol dependencies cannot be reconciled by npm outside the
-    DSH monorepo, and their packages are supplied by the DSH installation
-    anchor at runtime.  Such embedded packages are extracted as-is and skip
-    the package-manager closure pass.
-    """
-
-    try:
-        with tarfile.open(fileobj=BytesIO(content), mode="r:gz") as archive:
-            member = archive.getmember("package/package.json")
-            extracted = archive.extractfile(member)
-            if extracted is None:
-                return False
-            manifest = json.loads(extracted.read())
-    except (KeyError, OSError, tarfile.TarError, json.JSONDecodeError):
-        return False
-    if not isinstance(manifest, dict):
-        return False
-    declared = dict(manifest.get("dependencies") or {})
-    declared.update(manifest.get("peerDependencies") or {})
-    return any(
-        isinstance(specifier, str) and specifier.startswith("workspace:")
-        for specifier in declared.values()
-    )
-
-
-def _install_embedded_dependencies(
-    profile_path: Path,
-    embedded_artifacts: list[tuple[dict[str, Any], bytes]],
-    options: ImportOptions,
-) -> None:
-    """Install the dependency closure of every eligible embedded plugin.
-
-    An embedded artifact is the recorded package tarball itself; it carries the
-    plugin code but not the plugin's transitive ``dependencies``.  A single npm
-    reconciliation with every eligible embedded tarball as an install argument
-    restores that closure so the resulting Profile can boot with the same
-    dependency closure the source Profile had.  Embedded packages that declare
-    ``workspace:`` protocol dependencies are excluded: their closure is supplied
-    by the DSH installation anchor at runtime.  Lifecycle scripts stay disabled
-    and the local npm cache is preferred so already-available dependencies do
-    not require a second network round trip.
-    """
-
-    if not embedded_artifacts:
-        return
-    # DSH workspace packages declare their internal dependencies with the
-    # workspace: protocol, which a plain package manager cannot reconcile
-    # outside the monorepo.  Those closures are supplied by the DSH
-    # installation anchor at runtime, so the extracted package is kept as-is
-    # and only plugins with a normal registry closure run through npm.
-    eligible: list[tuple[dict[str, Any], bytes]] = []
-    for plugin, content in embedded_artifacts:
-        if _manifest_declares_workspace(content):
-            continue
-        eligible.append((plugin, content))
-    if not eligible:
-        return
-    staging = Path(tempfile.mkdtemp(prefix=".dsh-pack-embedded-", dir=profile_path.parent))
-    names = [str(plugin.get("name")) for plugin, _content in eligible]
-    try:
-        tarball_paths: list[str] = []
-        for index, (_plugin, content) in enumerate(eligible):
-            tarball = staging / f"embedded-{index}.tgz"
-            tarball.write_bytes(content)
-            tarball_paths.append(str(tarball))
-        command = [
-            _npm_command(options.npm_command),
-            "install",
-            "--ignore-scripts",
-            "--legacy-peer-deps",
-            "--no-save",
-            "--no-package-lock",
-            "--no-audit",
-            "--no-fund",
-            "--prefer-offline",
-            "--prefix",
-            str(profile_path),
-            "--",
-            *tarball_paths,
-        ]
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=profile_path,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=max(1, int(options.network_install_timeout)),
-            )
-        except FileNotFoundError as error:
-            raise PackImportError(
-                f"npm command is unavailable while installing embedded dependencies for {', '.join(names)}",
-                stage="embedded-install",
-                code="EMBEDDED_NPM_UNAVAILABLE",
-                details={"plugins": names, "command": command[0], "error": str(error)},
-            ) from error
-        except subprocess.TimeoutExpired as error:
-            raise PackImportError(
-                f"embedded dependency install timed out for {', '.join(names)}",
-                stage="embedded-install",
-                code="EMBEDDED_DEPENDENCIES_TIMEOUT",
-                details={"plugins": names, "timeoutSeconds": options.network_install_timeout},
-            ) from error
-        except OSError as error:
-            raise PackImportError(
-                f"cannot start npm while installing embedded dependencies for {', '.join(names)}",
-                stage="embedded-install",
-                code="EMBEDDED_NPM_FAILED",
-                details={"plugins": names, "command": command[0], "error": str(error)},
-            ) from error
-        if completed.returncode != 0:
-            raise PackImportError(
-                f"embedded dependency install failed for {', '.join(names)} with exit code {completed.returncode}",
-                stage="embedded-install",
-                code="EMBEDDED_DEPENDENCIES_INSTALL_FAILED",
-                details={
-                    "plugins": names,
-                    "command": command,
-                    "exitCode": completed.returncode,
-                    "stdout": _network_error_output(completed.stdout),
-                    "stderr": _network_error_output(completed.stderr),
-                },
-            )
-    finally:
-        _cleanup(staging)
-
-
 def _context(options: ImportOptions) -> PreflightContext:
+    verified_local_plugins = {}
+    for name, source in options.reference_plugin_sources.items():
+        manifest = _package_manifest(Path(source), stage="planning")
+        if manifest["name"] == name:
+            verified_local_plugins[name] = manifest["version"]
     return PreflightContext(
         current_environment=dict(options.current_environment),
         available_secrets=set() if options.available_secrets is None else set(options.available_secrets),
         available_plugins=_reference_inventory(options),
         allow_network_reference_install=options.allow_network_reference_install,
+        verified_local_plugins=verified_local_plugins,
     )
 
 
@@ -617,11 +505,10 @@ def _plugin_rows(lock: Mapping[str, Any], mode: str) -> tuple[dict[str, Any], ..
         artifact = plugin.get("artifact")
         if not isinstance(artifact, Mapping) or artifact.get("mode") != mode:
             continue
-        resolved = plugin.get("resolved")
         result.append(
             {
                 "name": plugin.get("name"),
-                "version": resolved.get("version") if isinstance(resolved, Mapping) else None,
+                "version": expected_install_version(plugin),
                 "required": plugin.get("required") is True,
                 "artifact": dict(artifact),
             }
@@ -668,6 +555,8 @@ def create_import_plan(
     except DshPackError as error:
         raise PackImportError(str(error), stage="preflight", code="PACK_READ_ERROR") from error
 
+    from .portability import check_targets
+    check_targets(home_path, data.user_data, overwrite=options.overwrite_existing_profile)
     requested_profile_name = _profile_name(data.manifest)
     profile_name = _select_profile_name(
         home_path,
@@ -694,6 +583,7 @@ def create_import_plan(
             code="PROFILE_CONFIG_MISSING",
         )
 
+    _, host_dependencies = _host_dependency_overrides(data, options)
     return ImportPlan(
         pack_path=source_path,
         dsh_home=home_path,
@@ -706,6 +596,8 @@ def create_import_plan(
             embedded_plugins=_plugin_rows(data.plugins_lock, "embedded"),
         reference_plugins=_plugin_rows(data.plugins_lock, "reference-only"),
         preflight=preflight,
+        portable_data=tuple(data.user_data),
+            host_provided_dependencies=tuple(host_dependencies),
     )
 
 
@@ -928,8 +820,7 @@ def _copy_reference_source(profile_path: Path, plugin: Mapping[str, Any], source
 
 def _verify_identity(profile_path: Path, plugin: Mapping[str, Any]) -> dict[str, Any]:
     name = str(plugin["name"])
-    resolved = plugin.get("resolved")
-    expected_version = resolved.get("version") if isinstance(resolved, Mapping) else None
+    expected_version = expected_install_version(plugin)
     installed = _package_manifest(_package_install_path(profile_path, name), stage="version-confirmation")
     if installed["name"] != name or installed["version"] != expected_version:
         raise PackImportError(
@@ -942,10 +833,322 @@ def _verify_identity(profile_path: Path, plugin: Mapping[str, Any]) -> dict[str,
                 "observed": {"name": installed.get("name"), "version": installed.get("version")},
             },
         )
+    bundle = plugin.get("bundle")
+    if isinstance(bundle, Mapping) and bundle.get("enabled") is True:
+        patch = bundle.get("patch")
+        package_root = _package_install_path(profile_path, name)
+        try:
+            paths = bundle_patch_paths(patch)
+            for relative in paths:
+                package_root.joinpath(*relative.split("/")).resolve().relative_to(package_root.resolve())
+        except (DshPackError, ValueError) as error:
+            raise PackImportError(
+                f"installed Bundle has an unsafe patch path: {name}",
+                stage="version-confirmation", code="BUNDLE_PATCH_INVALID",
+                details={"plugin": name, "patch": patch},
+            ) from error
+        try:
+            check_patch_declaration(installed, patch)
+        except DshPackError as error:
+            raise PackImportError(
+                f"installed Bundle patch declaration differs from Crate: {name}",
+                stage="version-confirmation", code="BUNDLE_PATCH_MISMATCH",
+                details={"plugin": name, "expected": patch},
+            ) from error
+        for relative in paths:
+            if not package_root.joinpath(*relative.split("/")).is_file():
+                raise PackImportError(
+                    f"installed Bundle patch is missing: {name}/{relative}",
+                    stage="version-confirmation", code="BUNDLE_PATCH_MISSING",
+                    details={"plugin": name, "patch": relative},
+                )
+        try:
+            read_bundle_patches(package_root, patch)
+        except DshPackError as error:
+            raise PackImportError(
+                f"installed Bundle patch content is unsafe: {name}",
+                stage="version-confirmation", code="BUNDLE_PATCH_INVALID",
+                details={"plugin": name, "patch": patch},
+            ) from error
     return {"name": name, "version": installed["version"], "mode": plugin["artifact"]["mode"]}
 
 
-def _metadata_payload(plan: ImportPlan, data: PackData, installed: tuple[dict[str, Any], ...], pack_digest: str) -> dict[str, Any]:
+def _remove_staged_package(profile_path: Path, name: str, *, stage: str) -> None:
+    """Replace only a package inside the temporary Profile, without following links."""
+    target = _package_install_path(profile_path, name)
+    # A package manager can create scoped directories or links. Reject linked
+    # ancestors before removing anything; never resolve through them for deletion.
+    for parent in target.parents:
+        if parent == profile_path:
+            break
+        if parent.is_symlink() or (getattr(parent, "is_junction", lambda: False)()):
+            raise PackImportError(
+                f"staged package ancestor is a link: {name}",
+                stage=stage, code="PLUGIN_TARGET_UNSAFE",
+                details={"plugin": name},
+            )
+    if target.is_symlink():
+        target.unlink()
+    elif getattr(target, "is_junction", lambda: False)():
+        target.rmdir()
+    elif target.is_dir():
+        shutil.rmtree(target)
+    elif target.exists():
+        target.unlink()
+
+
+def _write_network_manifest(profile_path: Path, dependencies: Mapping[str, str]) -> None:
+    # The exported Profile can contain local paths, embedded package registry
+    # requests, or optional sources that failed. npm must only see successful
+    # network references; the original Profile manifest is restored afterwards.
+    (profile_path / "package.json").write_text(
+        json.dumps({"name": "dsh-crate-import-staging", "private": True,
+                    "dependencies": dict(dependencies)}), encoding="utf-8",
+    )
+
+
+def _network_dependency_spec(plugin: Mapping[str, Any]) -> str:
+    specifier = npm_install_specifier(plugin)
+    assert specifier is not None  # the network plan already checked support
+    prefix = f"{plugin['name']}@"
+    return specifier[len(prefix):] if specifier.startswith(prefix) else specifier
+
+
+def _host_dependency_overrides(data: PackData, options: ImportOptions) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    """Use dependencies from a verified installation anchor, never by name alone.
+
+    Desktop supplies public manifest/file evidence read from its actual ASAR.
+    The Bundle artifact itself remains installed and managed by pnpm. Only its
+    already-present host dependencies are omitted from the Profile's pnpm tree,
+    where a second copy of host/native internals could shadow the official host.
+    """
+    if options.host_bundles is None:
+        return {}, []
+    overrides: dict[str, str] = {}
+    provided: list[dict[str, Any]] = []
+    for plugin in data.plugins_lock['plugins']:
+        if not plugin.get('bundle', {}).get('enabled') or plugin.get('runtime', {}).get('source') != 'installation-anchor':
+            continue
+        artifact = plugin.get('artifact', {})
+        if artifact.get('mode') != 'embedded':
+            continue
+        name = str(plugin['name'])
+        host = options.host_bundles.get(name)
+        def mismatch(message):
+            return PackImportError(message, stage='planning', code='HOST_BUNDLE_MISMATCH', details={
+                'plugin': name, 'suggestedNextStep': '请使用与 Crate 实际制品一致的官方桌面安装锚点，或重新导出当前环境；不要用另一份宿主依赖覆盖原生运行时。'})
+        if not isinstance(host, Mapping) or not isinstance(host.get('manifest'), Mapping) or not isinstance(host.get('files'), Mapping):
+            raise mismatch('the target host has no verified evidence for an installation-anchor Bundle')
+        content = data.plugin_artifacts[artifact['path'][len('plugins/'):]]
+        try:
+            archive_context = tarfile.open(fileobj=BytesIO(content), mode='r:gz')
+        except (tarfile.TarError, OSError) as error:
+            raise mismatch('the host Bundle artifact cannot be read') from error
+        with archive_context as archive:
+            try:
+                manifest_member = archive.getmember('package/package.json')
+                if not manifest_member.isfile():
+                    raise mismatch('the host Bundle manifest must be a regular file')
+                manifest = json.loads(archive.extractfile(manifest_member).read())
+            except (tarfile.TarError, KeyError, ValueError, OSError) as error:
+                raise mismatch('the host Bundle artifact has no readable package manifest') from error
+            if manifest != host['manifest'] or manifest.get('version') != expected_install_version(plugin):
+                raise mismatch('the host Bundle manifest differs from the embedded artifact')
+            for member in archive:
+                if member.isdir():
+                    continue
+                relative = member.name.removeprefix('package/')
+                if relative == 'package.json':
+                    continue  # compared semantically above, including dependencies
+                if member.isfile():
+                    payload = archive.extractfile(member).read()
+                elif member.islnk():
+                    payload = _read_artifact_hardlink(archive, member)
+                else:
+                    raise mismatch('the host Bundle artifact contains unsupported members')
+                if host['files'].get(relative) != sha256_bytes(payload):
+                    raise mismatch('the host Bundle files differ from the embedded artifact')
+        installed_dependencies = host.get('dependencies', {})
+        if not isinstance(installed_dependencies, Mapping):
+            raise mismatch('the host dependency evidence is invalid')
+        for field in ('dependencies', 'optionalDependencies'):
+            for dependency, requested in manifest.get(field, {}).items():
+                version = installed_dependencies.get(dependency)
+                if not isinstance(version, str) or not version:
+                    if field == 'optionalDependencies':
+                        continue
+                    raise mismatch('a declared Bundle dependency is missing from the target host')
+                overrides[name + '>' + dependency] = '-'
+                provided.append({'bundle': name, 'name': dependency, 'requested': requested,
+                                 'runtimeVersion': version, 'source': 'verified-installation-anchor'})
+    return overrides, provided
+
+
+def _adapt_profile_patch(profile: Path, options: ImportOptions) -> dict[str, Any] | None:
+    if not options.patch_adapter_command:
+        return None
+    path = profile / 'cordis.patch.yml'
+    original = path.read_bytes() if path.is_file() else None
+    command = [*options.patch_adapter_command, str(profile)]
+    completed = None
+    def safe_output(value: Any) -> str:
+        text = value.decode('utf-8', errors='replace') if isinstance(value, bytes) else str(value or '')
+        for name, secret in os.environ.items():
+            if secret and re.search(r'KEY|TOKEN|PASSWORD|SECRET|COOKIE|AUTH|PRIVATE|CREDENTIAL', name, re.I):
+                text = text.replace(secret, '[REDACTED]')
+        text = re.sub(r'(?i)(Bearer\s+)[^\s"\'<>]+', r'\1[REDACTED]', text)
+        return re.sub(r'(?i)([?&](?:token|access_token|auth|api_key)=)[^\s&#"\'<>]+', r'\1[REDACTED]', text)
+    try:
+        completed = subprocess.run(command, cwd=profile,
+            env=dict(os.environ, ELECTRON_RUN_AS_NODE='1'), capture_output=True,
+            text=True, timeout=max(1, options.network_install_timeout), check=False)
+        result = json.loads(completed.stdout)
+        if completed.returncode or not isinstance(result, dict) or result.get('error'):
+            raise ValueError('the official patch equivalence adapter failed')
+        if type(result.get('changed')) is not bool:
+            raise ValueError('patch adapter changed flag is invalid')
+        if result.get('changed') is not True:
+            if not isinstance(result.get('reason'), str) or not result['reason']:
+                raise ValueError('patch adapter unchanged evidence is invalid')
+            return {'changed': False, 'reason': result.get('reason', 'unchanged')}
+        content = base64.b64decode(result['contentBase64'], validate=True)
+        if original is None or sha256_bytes(original) != result['originalSha256'] or sha256_bytes(content) != result['runtimeSha256']:
+            raise ValueError('patch adapter content identity mismatch')
+        if path.read_bytes() != original:
+            raise ValueError('patch changed while the equivalence adapter was running')
+        changes = result.get('removedNames')
+        tree_hash = result.get('loaderTreeSha256')
+        if (not isinstance(changes, list) or not changes or any(not isinstance(row, dict) or set(row) != {'id', 'name'}
+                or not all(isinstance(value, str) and value for value in row.values()) for row in changes)
+                or not isinstance(tree_hash, str) or not re.fullmatch('[a-f0-9]{64}', tree_hash)):
+            raise ValueError('patch adapter equivalence evidence is missing')
+        backup = profile / '.dsh-crate/original-profile-config/cordis.patch.yml'
+        backup.write_bytes(original)
+        path.write_bytes(content)
+        return {'changed': True, 'originalSha256': sha256_bytes(original),
+                'runtimeSha256': sha256_bytes(content), 'loaderTreeSha256': tree_hash,
+                'removedNames': changes, 'adapter': 'official-desktop-composition-equivalence-v1'}
+    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
+        raise PackImportError('cannot preserve official Loader composition while adapting the target patch',
+            stage='configuration', code='PROFILE_PATCH_ADAPTATION_FAILED',
+            details={'command': command, 'reason': safe_output(str(error)),
+                     'exitCode': completed.returncode if completed is not None else None,
+                     'stdout': safe_output(completed.stdout if completed is not None else getattr(error, 'stdout', '')),
+                     'stderr': safe_output(completed.stderr if completed is not None else getattr(error, 'stderr', '')),
+                     'suggestedNextStep': '保留源 Profile 和原始 Crate，检查官方解析器及完整诊断；不要删除必需插件或绕过配置等价校验。'}) from error
+
+
+def _pnpm_rebuild(profile: Path, data: PackData, plugins: list[Mapping[str, Any]], options: ImportOptions) -> dict[str, Any]:
+    """Reconstruct manager-owned state from verified artifacts, never copy it.
+
+    Source SPEC remains in the Pack and original-package.json. The restored
+    Profile deliberately requests stable local artifacts so later official
+    manager operations do not depend on paths on the exporting machine.
+    """
+    command = options.pnpm_command
+    assert command
+    overrides, host_dependencies = _host_dependency_overrides(data, options)
+    artifacts = profile / '.dsh-crate' / 'artifacts'
+    artifacts.mkdir(parents=True, exist_ok=False)
+    original = data.profile_files['package.json']
+    (artifacts.parent / 'original-package.json').write_bytes(original)
+    manifest = json.loads(original)
+    dependencies: dict[str, str] = {}
+    for plugin in plugins:
+        name = str(plugin['name'])
+        artifact = plugin['artifact']
+        if artifact['mode'] == 'embedded':
+            content = data.plugin_artifacts[artifact['path'][len('plugins/'):]]
+        else:
+            # The existing installer resolved and verified this reference.
+            # Turn its portable package files into a local rebuild artifact.
+            source = _package_install_path(profile, name)
+            buffer = BytesIO()
+            with tarfile.open(fileobj=buffer, mode='w:gz') as archive:
+                for item in sorted(source.rglob('*')):
+                    relative = item.relative_to(source)
+                    if any(part in _REFERENCE_SOURCE_SKIP_DIRS for part in relative.parts):
+                        continue
+                    if item.is_symlink() or getattr(item, 'is_junction', lambda: False)():
+                        raise PackImportError('reference artifact contains a link', stage='configuration', code='PLUGIN_TARGET_UNSAFE', details={'plugin': name})
+                    if item.is_file():
+                        archive.add(item, arcname='package/' + relative.as_posix(), recursive=False)
+            content = buffer.getvalue()
+        filename = sha256_bytes(content) + '.tgz'
+        (artifacts / filename).write_bytes(content)
+        dependencies[name] = 'file:./.dsh-crate/artifacts/' + filename
+        _remove_staged_package(profile, name, stage='configuration')
+    manifest['dependencies'] = dependencies
+    # Imported optional packages are represented once in the rebuilt tree.
+    manifest.pop('optionalDependencies', None)
+    for field in ('pnpm', 'scripts', 'devDependencies', 'packageManager'):
+        manifest.pop(field, None)
+    (profile / 'package.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    # Source workspace/auth/hook configuration must not control the rebuild or
+    # later official manager operations. Keep the originals as inert evidence.
+    originals = artifacts.parent / 'original-profile-config'
+    originals.mkdir()
+    for name in ('pnpm-workspace.yaml', '.npmrc', '.pnpmfile.cjs', '.pnpmfile.mjs'):
+        path = profile / name
+        if path.exists():
+            path.rename(originals / name)
+    (profile / 'pnpm-workspace.yaml').write_text(
+        'packages:\n  - .\nnodeLinker: hoisted\nautoInstallPeers: false\nignorePnpmfile: true\nignoreScripts: true\nrecursiveInstall: false\npackageImportMethod: copy\n'
+        + 'overrides: ' + json.dumps(overrides,ensure_ascii=False) + '\n', encoding='utf-8')
+    # The source lock describes a different machine and different requests.
+    (profile / 'pnpm-lock.yaml').unlink(missing_ok=True)
+    args = [*command, 'install', '--ignore-scripts', '--prod', '--no-frozen-lockfile',
+            '--node-linker=hoisted', '--config.auto-install-peers=false',
+            '--config.manage-package-manager-versions=false', '--config.ignore-pnpmfile=true',
+            '--config.recursive-install=false', '--config.lockfile-dir=' + str(profile),
+            '--config.modules-dir=' + str(profile / 'node_modules'), '--config.virtual-store-dir=' + str(profile / 'node_modules/.pnpm'),
+            # Hard-linking a cached package into another Profile changes the
+            # existing file's ctime. DSH uses ctime in client module identities,
+            # so that can remount the source UI during its own Import request.
+            '--config.package-import-method=copy',
+            '--config.enable-global-virtual-store=false', '--config.shared-workspace-lockfile=false']
+    if not options.allow_network_reference_install:
+        args.append('--offline')
+    environment = dict(os.environ, ELECTRON_RUN_AS_NODE='1')
+    try:
+        completed = subprocess.run(args, cwd=profile, env=environment, capture_output=True, text=True,
+                                   timeout=max(1, options.network_install_timeout), check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise PackImportError('cannot rebuild the target with pnpm', stage='configuration', code='PACKAGE_MANAGER_FAILED', details={'error': str(error), 'command': args}) from error
+    if completed.returncode:
+        raise PackImportError('pnpm could not rebuild the target installation', stage='configuration', code='PACKAGE_MANAGER_FAILED', details={
+            'command': args, 'exitCode': completed.returncode,
+            'stdout': _network_error_output(completed.stdout), 'stderr': _network_error_output(completed.stderr)})
+    if not (profile / 'node_modules/.modules.yaml').is_file() or not (profile / 'pnpm-lock.yaml').is_file():
+        raise PackImportError('pnpm did not create the required installation records', stage='configuration', code='PACKAGE_MANAGER_STATE_MISSING')
+    # pnpm 11 writes this record as JSON, even with its legacy .yaml suffix.
+    # Its reader supports a virtualStoreDir relative to node_modules on all
+    # platforms, while its Windows writer emits an absolute staging path.
+    # Only normalize the generated hoisted record we just installed; never
+    # copy machine installation state out of a Pack or alter user profiles.
+    modules_path = profile / 'node_modules/.modules.yaml'
+    try:
+        modules = json.loads(modules_path.read_text(encoding='utf-8'))
+        virtual_store = Path(modules['virtualStoreDir'])
+        if not virtual_store.is_absolute():
+            virtual_store = profile / 'node_modules' / virtual_store
+        if modules.get('nodeLinker') != 'hoisted' or virtual_store.resolve() != (profile / 'node_modules/.pnpm').resolve():
+            raise ValueError(f"unexpected generated virtual store: {modules.get('nodeLinker')} / {modules.get('virtualStoreDir')}")
+        modules['virtualStoreDir'] = '.pnpm'
+        modules_path.write_text(json.dumps(modules, indent=2) + '\n', encoding='utf-8')
+    except (ValueError, KeyError, TypeError) as error:
+        raise PackImportError('pnpm installation records cannot be safely relocated', stage='configuration', code='PACKAGE_MANAGER_STATE_UNSUPPORTED', details={'error': str(error)}) from error
+    adaptation = _adapt_profile_patch(profile, options)
+    return {'resolver': 'pnpm', 'scripts': 'ignored', 'packageImportMethod': 'copy', 'requests': dependencies,
+            **({'profilePatchAdaptation': adaptation} if adaptation is not None else {}),
+            'hostProvidedDependencies': host_dependencies,
+            'workspaceSha256': sha256_bytes((profile / 'pnpm-workspace.yaml').read_bytes()),
+            'originalManifest': '.dsh-crate/original-package.json',
+            'originalManifestSha256': sha256_bytes(original),
+            'stdout': _network_error_output(completed.stdout)}
+
+
+def _metadata_payload(plan: ImportPlan, data: PackData, installed: tuple[dict[str, Any], ...], pack_digest: str, installation: Mapping[str, Any] | None = None) -> dict[str, Any]:
     return {
         "schemaVersion": 1,
         "status": "prepared",
@@ -954,6 +1157,7 @@ def _metadata_payload(plan: ImportPlan, data: PackData, installed: tuple[dict[st
         "overwrite": plan.overwrite,
         "plugins": list(installed),
         "requiredSecrets": list(data.manifest.get("requiredSecrets", [])),
+        **({'installation': {key: value for key, value in installation.items() if key != 'stdout'}} if installation else {}),
     }
 
 
@@ -1026,6 +1230,10 @@ def import_pack(
     except DshPackError as error:
         raise PackImportError(str(error), stage="preflight", code="PACK_READ_ERROR") from error
 
+    from .portability import check_targets, restore_files
+    check_targets(plan.dsh_home, data.user_data, overwrite=plan.overwrite)
+    data_created: list[Path] = []
+    data_directories: list[Path] = []
     profiles_root = plan.dsh_home / "profiles"
     temp_profile: Path | None = None
     final_created = False
@@ -1044,23 +1252,30 @@ def import_pack(
         profiles_root.mkdir(parents=True, exist_ok=True)
         temp_profile = Path(tempfile.mkdtemp(prefix=f".{plan.profile_name}.dsh-pack-", dir=profiles_root))
         for relative, content in data.profile_files.items():
+            # Older Crate exporters included their own target installation
+            # records. Never restore these as authoritative state; rebuild
+            # them from the verified plugin artifacts below.
+            if relative.split('/')[0].casefold() == '.dsh-crate':
+                continue
             _write_file(temp_profile, relative, content)
 
-        installed: dict[str, dict[str, Any]] = {}
+        installed: list[dict[str, Any]] = []
         lock_plugins = [plugin for plugin in data.plugins_lock.get("plugins", []) if isinstance(plugin, Mapping)]
+        installed_names: set[str] = set()
 
-        # Network reference installs run first: npm reconciles the whole
-        # Profile tree at the temporary prefix and prunes packages that are not
-        # part of its resolution.  Manually placed packages (embedded extracts
-        # and local reference copies) must therefore be written only after every
-        # npm operation has finished, or npm would delete them.
+        # npm reconciles the entire tree and can prune previously extracted
+        # packages. Complete every npm operation before materializing embedded
+        # artifacts and explicit local sources.
+        network_dependencies: dict[str, str] = {}
+        if network_plugins:
+            _write_network_manifest(temp_profile, network_dependencies)
         for plugin in lock_plugins:
             artifact = plugin.get("artifact")
             if not isinstance(artifact, Mapping) or artifact.get("mode") != "reference-only":
                 continue
             name = str(plugin["name"])
             if options.reference_installer is not None or name in options.reference_plugin_sources:
-                continue  # handled by the local-source pass below
+                continue
             if not (options.allow_network_reference_install and name in network_plugins):
                 continue
             try:
@@ -1068,43 +1283,36 @@ def import_pack(
             except PackImportError as error:
                 if plugin.get("required") is True:
                     raise
+                _remove_staged_package(temp_profile, name, stage="network-install")
                 warnings.append(error.as_dict())
                 continue
-            installed[name] = _verify_identity(temp_profile, plugin)
+            installed_names.add(name)
+            network_dependencies[name] = _network_dependency_spec(plugin)
+            _write_network_manifest(temp_profile, network_dependencies)
+        if network_plugins:
+            (temp_profile / "package.json").write_bytes(data.profile_files["package.json"])
 
-        # Embedded artifacts are self-contained package tarballs.  Collect
-        # them, install the eligible dependency closure through the package
-        # manager BEFORE any manual placement so a reconciling npm run cannot
-        # prune manually placed packages, then extract whatever npm did not
-        # place (workspace-protocol packages whose closure is supplied by the
-        # DSH installation anchor).
-        embedded_artifacts: list[tuple[dict[str, Any], bytes]] = []
         for plugin in lock_plugins:
             artifact = plugin.get("artifact")
             if not isinstance(artifact, Mapping) or artifact.get("mode") != "embedded":
                 continue
-            name = str(plugin["name"])
             path = artifact.get("path")
             if not isinstance(path, str):
                 raise PackImportError(
-                    f"embedded artifact path missing for {name}",
+                    f"embedded artifact path missing for {plugin.get('name')}",
                     stage="embedded-install",
                     code="ARTIFACT_PATH_MISSING",
                 )
             content = data.plugin_artifacts.get(path[len("plugins/"):])
             if content is None:
                 raise PackImportError(
-                    f"embedded artifact missing for {name}: {path}",
+                    f"embedded artifact missing for {plugin.get('name')}: {path}",
                     stage="embedded-install",
                     code="REQUIRED_ARTIFACT_MISSING",
                 )
-            embedded_artifacts.append((plugin, content))
-        _install_embedded_dependencies(temp_profile, embedded_artifacts, options)
-        for plugin, _content in embedded_artifacts:
-            name = str(plugin["name"])
-            if not _package_install_path(temp_profile, name).exists():
-                _extract_embedded_artifact(temp_profile, plugin, _content)
-            installed[name] = _verify_identity(temp_profile, plugin)
+            _remove_staged_package(temp_profile, str(plugin["name"]), stage="embedded-install")
+            _extract_embedded_artifact(temp_profile, plugin, content)
+            installed_names.add(str(plugin["name"]))
 
         for plugin in lock_plugins:
             artifact = plugin.get("artifact")
@@ -1123,14 +1331,15 @@ def import_pack(
                         code="PLUGIN_INSTALL_FAILED",
                         details={"plugin": name, "error": str(error)},
                     ) from error
-                installed[name] = _verify_identity(temp_profile, plugin)
+                installed_names.add(name)
                 continue
             if name in options.reference_plugin_sources:
+                _remove_staged_package(temp_profile, name, stage="reference-install")
                 _copy_reference_source(temp_profile, plugin, Path(options.reference_plugin_sources[name]))
-                installed[name] = _verify_identity(temp_profile, plugin)
+                installed_names.add(name)
                 continue
             if options.allow_network_reference_install and name in network_plugins:
-                continue  # already installed and verified in the network pass
+                continue  # final identity verification follows all installs
             if plugin.get("required") is True:
                 raise PackImportError(
                     f"required reference-only plugin was not installed: {name}",
@@ -1139,18 +1348,19 @@ def import_pack(
                     details={"plugin": name},
                 )
 
-        # Re-verify every installed package after the final install pass so a
-        # package-manager reconciliation that pruned a manually placed package
-        # is caught here instead of surfacing as a Profile that cannot boot.
-        for plugin in lock_plugins:
-            artifact = plugin.get("artifact")
-            if not isinstance(artifact, Mapping) or artifact.get("mode") not in ("embedded", "reference-only"):
-                continue
-            name = str(plugin["name"])
-            if name not in installed:
-                continue
-            installed[name] = _verify_identity(temp_profile, plugin)
+        # A later npm operation or installer can replace an earlier package.
+        # Confirm the final tree, not stale per-install observations, before any
+        # portable Home data is written or the prepared Profile is committed.
+        if options.pnpm_command:
+            selected = [plugin for plugin in lock_plugins if str(plugin['name']) in installed_names]
+            # Validate the inputs before letting the manager consume them.
+            for plugin in selected:
+                _verify_identity(temp_profile, plugin)
+            network_installs.append(_pnpm_rebuild(temp_profile, data, selected, options))
+        installed = [_verify_identity(temp_profile, plugin) for plugin in lock_plugins
+                     if str(plugin["name"]) in installed_names]
 
+        restore_files(plan.dsh_home, data.user_data, data_created, data_directories)
         pack_digest = sha256_bytes(plan.pack_path.read_bytes())
         final_profile = plan.profile_path
         if final_profile.exists():
@@ -1181,7 +1391,8 @@ def import_pack(
         (plan.metadata_path / "manifest.json").write_bytes(json.dumps(data.manifest, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8") + b"\n")
         (plan.metadata_path / "plugins.lock.json").write_bytes(json.dumps(data.plugins_lock, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8") + b"\n")
         (plan.metadata_path / "prepared.json").write_bytes(
-            json.dumps(_metadata_payload(plan, data, tuple(installed.values()), pack_digest), ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+            json.dumps(_metadata_payload(plan, data, tuple(installed), pack_digest,
+                       network_installs[-1] if options.pnpm_command else None), ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8") + b"\n"
         )
         for backup in (original_profile_backup, original_metadata_backup):
             if backup is None:
@@ -1203,52 +1414,93 @@ def import_pack(
             profile_path=final_profile,
             metadata_path=plan.metadata_path,
             plan=plan,
-            installed_plugins=tuple(installed.values()),
+            installed_plugins=tuple(installed),
             network_installs=tuple(network_installs),
             warnings=tuple(warnings),
         )
-    except PackImportError:
-        _cleanup(temp_profile)
-        if final_created:
-            _cleanup(plan.profile_path)
-        if metadata_created:
-            _cleanup(plan.metadata_path)
-        if original_profile_backup is not None and original_profile_backup.exists() and not plan.profile_path.exists():
-            original_profile_backup.rename(plan.profile_path)
-        if original_metadata_backup is not None and original_metadata_backup.exists() and not plan.metadata_path.exists():
-            original_metadata_backup.rename(plan.metadata_path)
-        if not metadata_parent_existed:
-            _cleanup_empty(metadata_parent)
-        if not metadata_root_existed:
-            _cleanup_empty(metadata_root)
-        raise
-    except (OSError, tarfile.TarError, ValueError) as error:
-        _cleanup(temp_profile)
-        if final_created:
-            _cleanup(plan.profile_path)
-        if metadata_created:
-            _cleanup(plan.metadata_path)
-        if original_profile_backup is not None and original_profile_backup.exists() and not plan.profile_path.exists():
-            original_profile_backup.rename(plan.profile_path)
-        if original_metadata_backup is not None and original_metadata_backup.exists() and not plan.metadata_path.exists():
-            original_metadata_backup.rename(plan.metadata_path)
-        if not metadata_parent_existed:
-            _cleanup_empty(metadata_parent)
-        if not metadata_root_existed:
-            _cleanup_empty(metadata_root)
-        raise PackImportError(
+    except (DshPackError, OSError, tarfile.TarError, ValueError) as error:
+        # Preserve the first failure before compensation. A Windows sharing
+        # lock may reject both the commit rename and subsequent cleanup.
+        # Cleanup must not replace that error or claim an unobserved rollback.
+        observed = {"error": str(error), "errorType": type(error).__name__}
+        if isinstance(error, OSError):
+            observed.update({key: getattr(error, key, None)
+                             for key in ("errno", "winerror", "filename", "filename2")})
+        failure = error if isinstance(error, DshPackError) else PackImportError(
             "Import failed unexpectedly",
             stage="commit",
             code="IMPORT_FAILED",
             details={
                 "item": "prepared metadata / Profile commit",
                 "expected": {"operation": "write prepared metadata and commit the new Profile"},
-                "observed": {"error": str(error)},
+                "observed": observed,
                 "evidence": {"profilePath": str(plan.profile_path), "metadataPath": str(plan.metadata_path)},
-                "impact": "Import failed during commit and was rolled back",
+                "impact": "Import failed; inspect the recorded rollback outcome",
                 "error": str(error),
             },
-        ) from error
+        )
+        rollback_errors: list[dict[str, Any]] = []
+
+        def compensate(operation: str, path: Path | None, action: Callable[[], None]) -> None:
+            try:
+                action()
+            except OSError as cleanup_error:
+                rollback_errors.append({
+                    "operation": operation, "path": str(path) if path is not None else None,
+                    "error": str(cleanup_error), "errorType": type(cleanup_error).__name__,
+                    "errno": cleanup_error.errno, "winerror": getattr(cleanup_error, "winerror", None),
+                })
+
+        # Portable files are independent cleanup actions: one locked file must
+        # not prevent removing another file created by this Import.
+        for created_path in reversed(data_created):
+            compensate("remove-portable-file", created_path, lambda path=created_path: path.unlink(missing_ok=True))
+        for created_directory in reversed(data_directories):
+            compensate("remove-portable-directory", created_directory, lambda path=created_directory: _cleanup_empty(path))
+        compensate("remove-temporary-profile", temp_profile, lambda: _cleanup(temp_profile))
+        if final_created:
+            compensate("remove-failed-profile", plan.profile_path, lambda: _cleanup(plan.profile_path))
+        if metadata_created:
+            compensate("remove-failed-metadata", plan.metadata_path, lambda: _cleanup(plan.metadata_path))
+        for operation, backup, destination in (
+            ("restore-original-profile", original_profile_backup, plan.profile_path),
+            ("restore-original-metadata", original_metadata_backup, plan.metadata_path),
+        ):
+            if backup is None or not backup.exists():
+                continue
+            if destination.exists():
+                rollback_errors.append({"operation": operation, "path": str(backup),
+                    "error": "恢复目标仍被占用，原始备份已保留，未覆盖该路径。", "destination": str(destination)})
+            else:
+                compensate(operation, backup, lambda saved=backup, target=destination: saved.rename(target))
+        if not metadata_parent_existed:
+            compensate("remove-empty-metadata-parent", metadata_parent, lambda: _cleanup_empty(metadata_parent))
+        if not metadata_root_existed:
+            compensate("remove-empty-metadata-root", metadata_root, lambda: _cleanup_empty(metadata_root))
+        if isinstance(failure, PackImportError):
+            retained_temp = temp_profile is not None and temp_profile.exists()
+            original_retained = original_profile_backup is not None and original_profile_backup.exists()
+            original_metadata_retained = original_metadata_backup is not None and original_metadata_backup.exists()
+            failure.details.update({
+                "temporaryProfileStatus": "retained" if retained_temp else "cleaned",
+                "failedProfileStatus": "retained" if final_created and plan.profile_path.exists() else "cleaned",
+                "originalProfileStatus": "restore-failed" if original_retained else "unchanged",
+                "rollback": {
+                    "status": "FAIL" if rollback_errors else "PASS", "errors": rollback_errors,
+                    "temporaryProfilePath": str(temp_profile) if retained_temp else None,
+                    "originalProfileBackup": str(original_profile_backup) if original_retained else None,
+                    "originalMetadataBackup": str(original_metadata_backup) if original_metadata_retained else None,
+                },
+            })
+            if rollback_errors:
+                failure.details.update({
+                    "canRetry": False,
+                    "impact": "导入失败，部分回滚未完成；请保留并检查诊断中列出的残留和备份路径。",
+                    "suggestedNextStep": "先检查原始错误与回滚错误，解除占用并核实残留及原 Profile 状态，再手动重新导入。",
+                })
+        if failure is error:
+            raise
+        raise failure from error
 
 
 def delete_profile(
@@ -1344,4 +1596,3 @@ def delete_profile(
         metadata_path=metadata_target,
         metadata_status=metadata_status,
     )
-

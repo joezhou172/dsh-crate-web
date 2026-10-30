@@ -12,17 +12,17 @@ export type DshCrateLocaleKey =
   | 'overwriteProfile' | 'newProfileName' | 'overwriteWarning' | 'overwritePreview'
   | 'confirmOverwrite' | 'overwriteCanceled' | 'deleteProfile' | 'deleteProfileWarning'
   | 'confirmDelete' | 'deleteSuccess' | 'profileNameRequired' | 'profileNameExists'
+  | 'exportPreset' | 'previewExport' | 'portableData' | 'dataOwner' | 'chooseOwner' | 'dataKind' | 'privacyReview' | 'completeness' | 'offlineRestore'
   | 'cancel'
+  | 'requiredSecrets' | 'missingSecrets' | 'secretNamesHint' | 'invalidSecretNames'
+  | 'switchUnavailable'
   | 'createProfile' | 'createProfilePlaceholder' | 'createProfileHint' | 'createPending' | 'createSuccess'
   | 'profileManagement' | 'currentRunningProfile' | 'switchProfile' | 'switchProfileWarning'
   | 'switchCanceled' | 'switchSuccess' | 'switchPending' | 'switchAlreadyActive'
-  | 'exportSuccess' | 'inspectSuccess' | 'verifySuccess' | 'verifyFailed' | 'verifyFinished' | 'verifyUntestedNote' | 'importOverwritten'
+  | 'exportSuccess' | 'inspectSuccess' | 'verifySuccess' | 'verifyFailed' | 'verifyFinished' | 'importOverwritten'
   | 'declaredBundles' | 'runtimePlugins' | 'runtimeEnabled' | 'runtimeDisabled' | 'runtimePluginsInactive' | 'updatedAt' | 'refresh'
   | 'pluginListTab' | 'pluginListLoading' | 'pluginListError' | 'retry'
   | 'officialPlugins' | 'userPlugins' | 'officialBadge' | 'conflictWarning' | 'conflictBundles' | 'collapse' | 'expand'
-  | 'confirmImportAction'
-  | 'diagCode' | 'diagStage' | 'diagItem' | 'diagExpected' | 'diagObserved' | 'diagEvidence' | 'diagImpact'
-  | 'diagOriginalProfile' | 'diagFailedProfile' | 'diagTemporaryProfile' | 'diagCanContinue' | 'diagSuggestedNext'
 
 export const en: Record<DshCrateLocaleKey, string> = {
   nav: 'DSH Crate', title: 'DSH Crate', intro: 'Export, inspect, and import a tested DSH environment Crate.',
@@ -30,8 +30,7 @@ export const en: Record<DshCrateLocaleKey, string> = {
   noProfiles: 'No selectable Profiles were found in this DSH_HOME.', artifactMode: 'Artifact mode',
   embedded: 'Embedded', referenceOnly: 'Reference-only', exportButton: 'Export Crate', exporting: 'Exporting…',
   choosePack: 'Choose a .dshcrate file', inspectButton: 'Run Preflight', importButton: 'Import Crate',
-  confirmImportAction: 'Confirm Import',
-  confirmImport: 'Imports as a new Profile after a Preflight check. Continue?', working: 'Working…', noReport: 'No report yet.',
+  confirmImport: 'Preflight passed. Import as a new Profile?', working: 'Working…', noReport: 'No report yet.',
   noHistory: 'No DSH Crate operations have been recorded.', download: 'Download Crate', plugins: 'Plugins',
   findings: 'Findings', coreStatus: 'Core status', rawJson: 'Raw JSON', diagnostic: 'Failure diagnostic',
   copyDiagnostic: 'Copy full diagnostic', diagnosticCopied: 'Copied', fullDiagnostic: 'View full diagnostic',
@@ -50,6 +49,10 @@ export const en: Record<DshCrateLocaleKey, string> = {
   confirmDelete: 'Confirm deletion', deleteSuccess: 'Profile deleted.', profileNameRequired: 'Profile name is required.',
   profileNameExists: 'That Profile name already exists.',
   cancel: 'Cancel',
+  switchUnavailable: 'This desktop environment cannot switch and restart Profiles here. Start the restored environment in a separate DSH Home.',
+  requiredSecrets: 'Required Secret names', missingSecrets: 'Missing Secret names',
+  secretNamesHint: 'Enter environment variable names only, separated by spaces or commas (for example DEEPSEEK_API_KEY). Never enter values. Blank keeps names recorded by a prior import; no credentials are read automatically.',
+  invalidSecretNames: 'Use environment variable names containing letters, digits and underscores, starting with a letter or underscore. Do not enter assignments or Secret values.',
   createProfile: 'New Profile', createProfilePlaceholder: 'new profile name', createProfileHint: 'A new Profile includes the official DSH bundles and the DSH Crate plugin by default.', createPending: 'Creating…', createSuccess: 'Profile created.',
   profileManagement: 'Profile management', currentRunningProfile: 'Currently running',
   switchProfile: 'Switch and restart Profile', switchProfileWarning: 'DSH will stop and restart using the selected Profile.',
@@ -58,17 +61,14 @@ export const en: Record<DshCrateLocaleKey, string> = {
   declaredBundles: 'Declared Bundles (Profile)', runtimePlugins: 'Runtime plugins (currently running Profile)', runtimeEnabled: 'enabled', runtimeDisabled: 'disabled', runtimePluginsInactive: 'Select the currently running Profile to see its live runtime plugin list.', updatedAt: 'Last refreshed', refresh: 'Refresh',
   pluginListTab: 'Plugin list', pluginListLoading: 'Reading plugins…', pluginListError: 'Plugins are temporarily unavailable.', retry: 'Retry',
   officialPlugins: 'Official built-in plugins', userPlugins: 'User-installed & written plugins', officialBadge: 'Official', conflictWarning: 'Conflicts with an official built-in; excluded from export', conflictBundles: 'Conflicted Bundles (not exported)', collapse: 'Collapse', expand: 'Expand',
+  exportPreset: 'Export mode', previewExport: 'Review export contents', portableData: 'Selected conversations and plugin data', dataOwner: 'Plugin owner', chooseOwner: 'Choose the owner after checking its storage contract', dataKind: 'Data type', privacyReview: 'Review selected data before sharing. Recognizable credentials are blocked; private text still needs your review.', completeness: 'Freeze completeness', offlineRestore: 'Offline-restorable',
   exportSuccess: 'Crate exported successfully.',
   inspectSuccess: 'Preflight finished.',
   verifySuccess: 'Verification passed.',
   verifyFailed: 'Verification failed.',
   verifyFinished: 'Verification finished.',
-  verifyUntestedNote: 'UNTESTED means composition was checked only; runtime, model, session, and plugin behavior were NOT actually verified.',
   importOverwritten: 'Profile overwritten.',
   switchPending: 'Switching Profile and waiting for DSH ready…',
-  diagCode: 'Code', diagStage: 'Stage', diagItem: 'Item', diagExpected: 'Expected', diagObserved: 'Observed',
-  diagEvidence: 'Evidence', diagImpact: 'Impact', diagOriginalProfile: 'Original Profile', diagFailedProfile: 'Failed Profile',
-  diagTemporaryProfile: 'Temporary Profile', diagCanContinue: 'Can continue', diagSuggestedNext: 'Suggested next step',
 }
 
 export const zh: Record<DshCrateLocaleKey, string> = {
@@ -77,8 +77,7 @@ export const zh: Record<DshCrateLocaleKey, string> = {
   noProfiles: '当前 DSH_HOME 没有可选择的 Profile。', artifactMode: 'Artifact 模式',
   embedded: '内嵌', referenceOnly: '仅引用', exportButton: '导出 Crate', exporting: '导出中…',
   choosePack: '选择 .dshcrate 文件', inspectButton: '运行 Preflight', importButton: '导入 Crate',
-  confirmImportAction: '确认导入',
-  confirmImport: '将作为新 Profile 导入，导入前会先执行 Preflight 检查。是否继续？', working: '处理中…', noReport: '暂无报告。',
+  confirmImport: 'Preflight 已通过。要作为新 Profile 导入吗？', working: '处理中…', noReport: '暂无报告。',
   noHistory: '还没有 DSH Crate 操作记录。', download: '下载 Crate', plugins: '插件',
   findings: '诊断项', coreStatus: 'Core 状态', rawJson: '原始 JSON', diagnostic: '失败诊断',
   copyDiagnostic: '复制完整诊断', diagnosticCopied: '已复制', fullDiagnostic: '查看完整诊断',
@@ -97,6 +96,10 @@ export const zh: Record<DshCrateLocaleKey, string> = {
   confirmDelete: '确认删除', deleteSuccess: 'Profile 已删除。', profileNameRequired: '必须填写 Profile 名称。',
   profileNameExists: '该 Profile 名称已存在。',
   cancel: '取消',
+  switchUnavailable: '当前桌面环境不支持在此切换并重启 Profile。请在独立的 DSH Home 中启动恢复后的环境。',
+  requiredSecrets: '所需 Secret 名称', missingSecrets: '缺失的 Secret 名称',
+  secretNamesHint: '只填写环境变量名称，用空格或逗号分隔，例如 DEEPSEEK_API_KEY。不要填写值。留空时沿用此前导入记录的名称；不会自动读取凭据。',
+  invalidSecretNames: '名称只能包含字母、数字和下划线，并以字母或下划线开头。不要填写赋值表达式或 Secret 值。',
   createProfile: '新建 Profile', createProfilePlaceholder: '新 Profile 名称', createProfileHint: '新 Profile 默认包含官方插件与本插件（DSH Crate）。', createPending: '创建中…', createSuccess: 'Profile 已创建。',
   profileManagement: 'Profile 管理', currentRunningProfile: '当前运行 Profile',
   switchProfile: '切换并重启 Profile', switchProfileWarning: 'DSH 将停止当前进程，并使用所选 Profile 重新启动。',
@@ -105,15 +108,12 @@ export const zh: Record<DshCrateLocaleKey, string> = {
   declaredBundles: '声明 Bundle（Profile）', runtimePlugins: '运行时插件（当前运行 Profile）', runtimeEnabled: '已启用', runtimeDisabled: '已禁用', runtimePluginsInactive: '选择当前运行的 Profile 以查看其实时运行的插件列表。', updatedAt: '最近刷新', refresh: '刷新',
   pluginListTab: '插件列表', pluginListLoading: '正在读取插件…', pluginListError: '暂时无法读取插件。', retry: '重试',
   officialPlugins: '官方内置插件', userPlugins: '用户安装与编写的插件', officialBadge: '官方', conflictWarning: '与官方内置插件冲突，已排除导出', conflictBundles: '冲突 Bundle（未导出）', collapse: '折叠', expand: '展开',
+  exportPreset: '导出模式', previewExport: '预览导出内容', portableData: '选择会话与插件数据', dataOwner: '所属插件', chooseOwner: '确认存储归属后选择插件', dataKind: '数据类型', privacyReview: '分享前请检查所选内容。可识别的凭据会被阻止，私人文本仍需自行检查。', completeness: 'Freeze 完整度', offlineRestore: '离线可恢复',
   exportSuccess: 'Crate 导出成功。',
   inspectSuccess: 'Preflight 检查完成。',
   verifySuccess: '验证通过。',
   verifyFailed: '验证未通过。',
   verifyFinished: '验证完成。',
-  verifyUntestedNote: 'UNTESTED 表示仅验证了组合（composition），运行时、模型、会话、插件业务行为均未实际验证。',
   importOverwritten: 'Profile 已覆盖。',
   switchPending: '正在切换 Profile，等待 DSH ready…',
-  diagCode: '诊断代码', diagStage: '失败阶段', diagItem: '对象', diagExpected: '预期', diagObserved: '实际', diagEvidence: '证据',
-  diagImpact: '影响', diagOriginalProfile: '原 Profile 状态', diagFailedProfile: '失败 Profile 状态', diagTemporaryProfile: '临时 Profile 状态',
-  diagCanContinue: '是否可继续', diagSuggestedNext: '建议下一步',
 }

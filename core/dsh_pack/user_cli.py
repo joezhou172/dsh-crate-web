@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from . import cli as core_cli
-from .diagnostics import CRATE_VERSION, DIAGNOSTIC_SCHEMA_VERSION, PRODUCER
 from .errors import PackImportError
 from .importer import ImportOptions, create_import_plan
 
@@ -115,11 +114,9 @@ def _envelope(
         preflight = result.get("plan", {}).get("preflight", {}) if isinstance(result.get("plan"), dict) else {}
         if isinstance(preflight, dict) and preflight.get("status") in {"READY", "NOT_READY"}:
             status = preflight["status"]
+    from .diagnostics import envelope_fields
     return {
-        "producer": PRODUCER,
-        "crateVersion": CRATE_VERSION,
-        "diagnosticSchemaVersion": DIAGNOSTIC_SCHEMA_VERSION,
-        "operation": command,
+        **envelope_fields(operation=command, status=status, operation_id=operation_id),
         "operationId": operation_id,
         "command": command,
         "status": status,
@@ -212,6 +209,11 @@ def _export_core_args(args: argparse.Namespace, home: Path) -> list[str]:
     if args.include_installed_bundles:
         argv.append("--include-installed-bundles")
     _append_repeated(argv, "--required-secret", args.required_secret)
+    if args.preset != "custom":
+        _append_option(argv, "--preset", args.preset)
+    _append_option(argv, "--data-selection-json", args.data_selection_json)
+    if args.plan_only:
+        argv.append("--plan-only")
     return argv
 
 
@@ -299,6 +301,10 @@ def _finish_operation(
 
 
 def _run_export(args: argparse.Namespace) -> int:
+    if args.plan_only:
+        code, payload = _invoke_core(_export_core_args(args, _dsh_home(args.dsh_home)))
+        _print(payload, as_json=args.json)
+        return code
     home = _operation_home(args, profile=args.profile)
     exit_code, result = _invoke_core(_export_core_args(args, home))
     return _finish_operation("export", args, home, exit_code, result)
@@ -404,6 +410,9 @@ def _build_parser() -> argparse.ArgumentParser:
     export.add_argument("--embed", action="append", default=[], metavar="PLUGIN")
     export.add_argument("--reference-only", action="append", default=[], metavar="PLUGIN")
     export.add_argument("--include-installed-bundles", action="store_true", help="include direct installed Bundle inventory in the exported Profile composition")
+    export.add_argument("--preset", choices=("share", "freeze", "custom"), default="custom")
+    export.add_argument("--data-selection-json", help="JSON array of explicitly selected data paths, kinds and owners")
+    export.add_argument("--plan-only", action="store_true", help="preview export contents without writing a Crate")
     export.add_argument("--required-secret", action="append", default=[], metavar="NAME")
     export.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     export.add_argument("--dsh-home", help="DSH_HOME used for Profile-name resolution and reports")
@@ -450,6 +459,8 @@ def _build_parser() -> argparse.ArgumentParser:
     delete.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     delete.add_argument("--dsh-home", help="DSH_HOME containing the Profile and operation reports")
     delete.set_defaults(handler=_run_delete_profile)
+    from .troubleshooting import configure_parser
+    configure_parser(subparsers)
     return parser
 
 

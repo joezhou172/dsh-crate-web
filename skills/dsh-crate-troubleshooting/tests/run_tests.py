@@ -6,7 +6,7 @@ Run from the repository root:
 
 The tests exercise the version gate, code classification, repair-level policy,
 and stop conditions of the Troubleshooting Skill against the diagnostic
-registry in ``core/dsh_pack/diagnostics.py``.
+registry in ``src/dsh_pack/diagnostics.py``.
 """
 
 from __future__ import annotations
@@ -17,9 +17,9 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / ("src" if (ROOT / "src/dsh_pack").is_dir() else "core")))
 
-from core.dsh_pack import diagnostics  # noqa: E402
+from dsh_pack import diagnostics  # noqa: E402
 
 SKILL_VERSION = "0.1.1"
 DSH_CRATE_RANGE = ">=0.1.0 <0.2.0"
@@ -211,7 +211,7 @@ class T16EnvelopeCarriedByCore(unittest.TestCase):
     """The versioned envelope must be present on real Core diagnostics."""
 
     def test_pack_import_error_envelope(self):
-        from core.dsh_pack.errors import PackImportError
+        from dsh_pack.errors import PackImportError
 
         error = PackImportError(
             "boom", stage="planning", code="PLUGIN_SOURCE_MISSING",
@@ -225,17 +225,17 @@ class T16EnvelopeCarriedByCore(unittest.TestCase):
         self.assertEqual(data["status"], "FAIL")
 
     def test_preflight_finding_envelope(self):
-        from core.dsh_pack.preflight import _finding
+        from dsh_pack.preflight import _finding
 
         finding = _finding("BLOCKER", "SCHEMA_ERROR", "schema error", path="manifest.json")
         data = finding.as_dict()
         self.assertEqual(data["producer"], "dsh-crate")
         self.assertEqual(data["operation"], "inspect")
-        self.assertEqual(data["status"], "BLOCKER")
+        self.assertEqual(data["status"], "FAIL")
         self.assertIn("diagnosticSchemaVersion", data)
 
     def test_runtime_diagnostic_envelope(self):
-        from core.dsh_pack.verify import _runtime_diagnostic
+        from dsh_pack.verify import _runtime_diagnostic
 
         data = _runtime_diagnostic(
             code="RUNNER_READY_TIMEOUT", stage="runtime", message="timeout",

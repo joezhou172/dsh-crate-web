@@ -1,16 +1,19 @@
 /** Host half: a small local HTTP bridge to the installed dsh-crate Core CLI. */
 
 import { randomUUID } from 'node:crypto'
-import { createReadStream, readFileSync } from 'node:fs'
-import { access, cp, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { installWindowsRunnerHook, prepareWindowsRunner, windowsTerminalRuntime, type SandboxHook, type WindowsTerminalConfig } from './windows-terminal.ts'
+import { createReadStream } from 'node:fs'
+import { access, lstat, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { platform as osPlatform } from 'node:os'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { readHistory, record } from './history.ts'
+import { copyPackage, desktopRuntimeRoot, desktopRuntimeVersion, materializeDesktopModules, rejectRequest, writeDesktopHostBundles } from './desktop.ts'
+import { prepareVerifyArgs } from './verify.ts'
 
 const API_PATH = '/dsh-crate/api'
 const DOWNLOAD_PATH = '/dsh-crate/download'
@@ -19,35 +22,9 @@ const SAFE_NAME = /^[A-Za-z0-9._-]+$/
 const SAFE_PLUGIN_NAME = /^@?[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)?$/
 const SAFE_OPERATION_ID = /^[0-9a-f-]{36}$/i
 const CRATE_PACKAGE_NAME = 'dsh-crate-web'
-const DIAGNOSTIC_PRODUCER = 'dsh-crate'
-const DIAGNOSTIC_SCHEMA_VERSION = 1
-
-function crateVersion(): string {
-  try {
-    const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)))
-    const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')) as JsonObject
-    if (typeof manifest.version === 'string' && manifest.version !== '') return manifest.version
-  } catch {
-    // The package manifest is unavailable; report an empty version rather than
-    // inventing one. createProfile reports CRATE_VERSION_MISSING in this case.
-  }
-  return ''
-}
-const CRATE_VERSION = crateVersion()
-
-function diagnosticEnvelope(operation: string, status: string): JsonObject {
-  const envelope: JsonObject = {
-    producer: DIAGNOSTIC_PRODUCER,
-    crateVersion: CRATE_VERSION,
-    diagnosticSchemaVersion: DIAGNOSTIC_SCHEMA_VERSION,
-    operation,
-    status,
-  }
-  return envelope
-}
 
 type JsonObject = Record<string, unknown>
-type Action = 'profiles' | 'history' | 'inspect' | 'export' | 'import' | 'delete-profile' | 'create-profile' | 'switch-profile' | 'switch-status' | 'verify'
+type Action = 'profiles' | 'history' | 'inspect' | 'export' | 'export-plan' | 'import' | 'delete-profile' | 'create-profile' | 'switch-profile' | 'switch-status' | 'verify'
 
 interface CoreRun {
   code: number
@@ -212,6 +189,21 @@ function isCommandNotFound(error: unknown): boolean {
 }
 
 async function spawnCore(home: string, command: CoreCommand, args: string[]): Promise<CoreRun> {
+  const selectedNames = args.flatMap((arg, index) =>
+    (arg === '--embed' || arg === '--reference-only') && typeof args[index + 1] === 'string' ? [args[index + 1]!] : [])
+  const runtimeModules = await materializeDesktopModules(home, selectedNames)
+  const hostBundlesFile = await writeDesktopHostBundles(home)
+  const desktopRoot = desktopRuntimeRoot()
+  let pnpmCommand: string | undefined
+  let patchAdapterCommand: string | undefined
+  if (desktopRoot) {
+    const entry = resolve(desktopRoot, '..', '..', 'runtime', 'primary-runtime', 'dependencies', 'pnpm', 'bin', 'pnpm.cjs')
+    await access(entry)
+    pnpmCommand = JSON.stringify([process.execPath, '--expose-internals', entry])
+    const helper = join(dirname(dirname(fileURLToPath(import.meta.url))), 'desktop-patch-helper.mjs')
+    await access(helper)
+    patchAdapterCommand = JSON.stringify([process.execPath, '--expose-internals', helper, desktopRoot])
+  }
   return await new Promise((resolveRun, reject) => {
     const child = spawn(command.command, [...command.prefix, ...args], {
       cwd: home,
@@ -221,6 +213,10 @@ async function spawnCore(home: string, command: CoreCommand, args: string[]): Pr
         DSH_HOME: home,
         DSH_PACK_CORE_MODE: '1',
         PYTHONDONTWRITEBYTECODE: '1',
+        ...(runtimeModules ? { DSH_PACK_RUNTIME_MODULES: runtimeModules } : {}),
+        ...(pnpmCommand ? { DSH_PACK_PNPM_COMMAND: pnpmCommand } : {}),
+        ...(hostBundlesFile ? { DSH_PACK_HOST_BUNDLES_FILE: hostBundlesFile } : {}),
+        ...(patchAdapterCommand ? { DSH_PACK_PATCH_ADAPTER_COMMAND: patchAdapterCommand } : {}),
       },
       shell: false,
       windowsHide: true,
@@ -277,9 +273,9 @@ function isObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
-function coreDiagnostic(result: unknown, fallback: string, operation: string): JsonObject {
+function coreDiagnostic(result: unknown, fallback: string): JsonObject {
   if (isObject(result) && isObject(result.error)) return result.error
-  return { message: fallback, ...diagnosticEnvelope(operation, 'FAIL') }
+  return { message: fallback }
 }
 
 function runtimeCoreArgs(): string[] {
@@ -287,10 +283,10 @@ function runtimeCoreArgs(): string[] {
     '--node-version', process.version.replace(/^v/, ''),
     '--os-name', osPlatform() === 'win32' ? 'windows' : osPlatform(),
   ]
-  // The host cannot safely infer the DSH launcher version from Node. A DSH
-  // deployment may provide it explicitly; otherwise Core leaves that check
-  // unknown instead of manufacturing a mismatch.
-  if (process.env.DSH_VERSION) args.push('--dsh-version', process.env.DSH_VERSION)
+  // Desktop exposes its exact installation manifest; CLI deployments may
+  // supply a version explicitly. Node's version is never a DSH version.
+  const version = desktopRuntimeVersion() ?? process.env.DSH_VERSION
+  if (version) args.push('--dsh-version', version)
   return args
 }
 
@@ -312,15 +308,16 @@ function currentRuntime(home: string): JsonObject {
   const portValue = argumentValue(args, '--port') ?? process.env.DSH_PACK_PORT
   const port = portValue !== undefined && /^\d+$/.test(portValue) ? Number(portValue) : undefined
   return {
-    currentProfile: argumentValue(args, '--profile') ?? process.env.DSH_PACK_ACTIVE_PROFILE ?? null,
+    currentProfile: argumentValue(args, '--profile') ?? process.env.DSH_PACK_ACTIVE_PROFILE ?? process.env.DSH_PROFILE ?? (desktopRuntimeRoot() ? 'desktop' : null),
     pid: process.pid,
     dshHome: home,
     port: port ?? null,
-    restartConfigured: typeof process.argv[1] === 'string' && port !== undefined,
+    restartConfigured: !desktopRuntimeRoot() && typeof process.argv[1] === 'string' && port !== undefined,
+    launcher: desktopRuntimeRoot() ? 'official-desktop' : 'cli',
   }
 }
 
-function operationDiagnostic(code: string, stage: string, item: string, message: string, impact: string, suggestedNextStep: string, operation: string): JsonObject {
+function operationDiagnostic(code: string, stage: string, item: string, message: string, impact: string, suggestedNextStep: string): JsonObject {
   return {
     code,
     stage,
@@ -338,7 +335,6 @@ function operationDiagnostic(code: string, stage: string, item: string, message:
       'retry after correcting the reported item',
     ],
     message,
-    ...diagnosticEnvelope(operation, 'FAIL'),
   }
 }
 
@@ -358,101 +354,12 @@ async function readInstalledBundle(packagePath: string, location: string): Promi
       : undefined
     if (bundle === null || typeof bundle !== 'object' || Array.isArray(bundle)) return undefined
     const patch = (bundle as JsonObject).patch
-    if (typeof packageJson.name !== 'string' || typeof packageJson.version !== 'string' || typeof patch !== 'string' || patch.trim() === '') return undefined
+    const validPatch = typeof patch === 'string' ? patch.trim() !== ''
+      : Array.isArray(patch) && patch.length > 0 && patch.every(value => typeof value === 'string' && value.trim() !== '')
+    if (typeof packageJson.name !== 'string' || typeof packageJson.version !== 'string' || !validPatch) return undefined
     return { name: packageJson.name, version: packageJson.version, patch, location }
   } catch {
     return undefined
-  }
-}
-
-let profileInvariantPromise: Promise<void> | undefined
-
-async function ensureCrateBundleInAllProfilesOnce(home: string): Promise<void> {
-  const profilesRoot = join(home, 'profiles')
-  let entries
-  try {
-    entries = await readdir(profilesRoot, { withFileTypes: true })
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
-    throw error
-  }
-
-  const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)))
-  const sourceManifest = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')) as JsonObject
-  const sourceVersion = typeof sourceManifest.version === 'string' ? sourceManifest.version : undefined
-  if (sourceVersion === undefined) throw new Error('DSH Crate package version is missing')
-
-  const anchorPackage = join(profilesRoot, 'node_modules', ...CRATE_PACKAGE_NAME.split('/'))
-  let anchorManifest: JsonObject | undefined
-  try {
-    const value: unknown = JSON.parse(await readFile(join(anchorPackage, 'package.json'), 'utf8'))
-    if (isObject(value)) anchorManifest = value
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-  }
-  if (anchorManifest === undefined && resolve(packageRoot) !== resolve(anchorPackage)) {
-    try {
-      await stat(anchorPackage)
-      throw new Error(`DSH Crate installation anchor exists but has no valid package.json: ${anchorPackage}`)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    }
-    await mkdir(dirname(anchorPackage), { recursive: true })
-    await cp(packageRoot, anchorPackage, { recursive: true })
-    const value: unknown = JSON.parse(await readFile(join(anchorPackage, 'package.json'), 'utf8'))
-    if (isObject(value)) anchorManifest = value
-  }
-  const crateVersion = typeof anchorManifest?.version === 'string' ? anchorManifest.version : sourceVersion
-
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !SAFE_NAME.test(entry.name)) continue
-    const manifestPath = join(profilesRoot, entry.name, 'package.json')
-    let manifest: JsonObject
-    try {
-      const value: unknown = JSON.parse(await readFile(manifestPath, 'utf8'))
-      if (!isObject(value)) continue
-      manifest = value
-    } catch {
-      continue
-    }
-
-    const dependenciesValue = manifest.dependencies
-    if (dependenciesValue !== undefined && !isObject(dependenciesValue)) continue
-    const dependencies = isObject(dependenciesValue) ? dependenciesValue : {}
-    const dshValue = manifest.dsh
-    if (dshValue !== undefined && !isObject(dshValue)) continue
-    const dsh = isObject(dshValue) ? dshValue : {}
-    const profileValue = dsh.profile
-    if (profileValue !== undefined && !isObject(profileValue)) continue
-    const profile = isObject(profileValue) ? profileValue : {}
-    const bundlesValue = profile.bundles
-    if (bundlesValue !== undefined && (!Array.isArray(bundlesValue) || bundlesValue.some(item => typeof item !== 'string'))) continue
-    const bundles = Array.isArray(bundlesValue) ? [...bundlesValue] : []
-
-    let changed = false
-    if (typeof dependencies[CRATE_PACKAGE_NAME] !== 'string') {
-      dependencies[CRATE_PACKAGE_NAME] = crateVersion
-      changed = true
-    }
-    if (!bundles.includes(CRATE_PACKAGE_NAME)) {
-      bundles.push(CRATE_PACKAGE_NAME)
-      changed = true
-    }
-    if (!changed) continue
-
-    manifest.dependencies = dependencies
-    manifest.dsh = { ...dsh, profile: { ...profile, bundles } }
-    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
-  }
-}
-
-async function ensureCrateBundleInAllProfiles(home: string): Promise<void> {
-  if (profileInvariantPromise !== undefined) return profileInvariantPromise
-  profileInvariantPromise = ensureCrateBundleInAllProfilesOnce(home)
-  try {
-    await profileInvariantPromise
-  } finally {
-    profileInvariantPromise = undefined
   }
 }
 
@@ -492,6 +399,8 @@ async function listInstalledBundles(profileModules: string, anchorModules: strin
       }
     }
   }
+  const desktop = desktopRuntimeRoot()
+  if (desktop) await scanRoot(join(desktop, 'node_modules'), 'installation-anchor')
   await scanRoot(profileModules, 'profile')
   await scanRoot(anchorModules, 'installation-anchor')
   return [...bundles.values()].sort((left, right) => String(left.name).localeCompare(String(right.name)))
@@ -501,23 +410,19 @@ async function listInstalledBundles(profileModules: string, anchorModules: strin
  * Packages published by the DSH project are treated as official built-ins.
  * This is the single source of truth for the official/user split used by the
  * plugin inventory UI: a runtime loader row is official only when the package
- * itself is an official bundle, or when an official bundle's patch inserts it
- * as a built-in loader row (for example the official web-app bundle composes
- * `dsh-better-sidebar` under its own package name). Loader row ids are
- * deliberately NOT used, because a user plugin may register a row id that
- * collides with an official built-in (for example a custom sidebar) and must
- * stay in the user group.
+ * itself is an official bundle. Loader row ids are deliberately NOT used,
+ * because a user plugin may register a row id that collides with an official
+ * built-in (for example a custom sidebar) and must stay in the user group.
  */
 function isOfficialPackage(name: string): boolean {
   return name.startsWith('@deepseek-ai/')
 }
 
-/** Loader row identities (`id`/`name`) registered by an ``insert`` block. */
-function insertedLoaderRows(patchText: string): { id?: string; name?: string }[] {
-  const rows: { id?: string; name?: string }[] = []
+/** Collect loader row ids registered via top-level ``insert`` blocks. */
+function insertedLoaderIds(patchText: string): string[] {
+  const ids: string[] = []
   let inInsert = false
   let insertIndent: number | undefined
-  let fieldIndent: number | undefined
   for (const raw of patchText.split(/\r?\n/)) {
     const line = raw.replace(/\s+$/, '')
     const stripped = line.trim()
@@ -527,89 +432,42 @@ function insertedLoaderRows(patchText: string): { id?: string; name?: string }[]
       const key = stripped.slice(2).trim()
       inInsert = key === 'insert:'
       insertIndent = undefined
-      fieldIndent = undefined
       continue
     }
     if (!inInsert) continue
-    if (stripped.startsWith('- ')) {
-      if (insertIndent === undefined) insertIndent = indent
-      if (indent !== insertIndent) continue
-      fieldIndent = indent + 2
-      const row = stripped.slice(2).trim()
-      const match = /^([a-zA-Z][a-zA-Z0-9_-]*):\s*(.*)$/.exec(row)
-      if (match === null) continue
-      const value = match[2].trim().replace(/^["']|["']$/g, '')
-      if (value === '') continue
-      if (match[1] === 'id') rows.push({ id: value })
-      if (match[1] === 'name') rows.push({ name: value })
-      continue
+    if (!stripped.startsWith('- ')) continue
+    if (insertIndent === undefined) insertIndent = indent
+    if (indent !== insertIndent) continue
+    const row = stripped.slice(2).trim()
+    if (row.startsWith('id:')) {
+      const value = row.slice(3).trim().replace(/^["']|["']$/g, '')
+      if (value) ids.push(value)
     }
-    // Field line of the current insert row (name/package and row sub-fields).
-    if (fieldIndent === undefined || indent !== fieldIndent) continue
-    const field = /^([a-zA-Z][a-zA-Z0-9_-]*):\s*(.*)$/.exec(stripped)
-    if (field === null) continue
-    const value = field[2].trim().replace(/^["']|["']$/g, '')
-    if (value === '') continue
-    if (field[1] === 'id') rows.push({ id: value })
-    if (field[1] === 'name') rows.push({ name: value })
   }
-  return rows
+  return ids
 }
 
-/** Loader row ids registered via top-level ``insert`` blocks. */
-function insertedLoaderIds(patchText: string): string[] {
-  return insertedLoaderRows(patchText).filter((row): row is { id: string } => row.id !== undefined).map(row => row.id)
-}
-
-/** Loader row package names registered via top-level ``insert`` blocks. */
-function insertedLoaderNames(patchText: string): string[] {
-  return insertedLoaderRows(patchText).filter((row): row is { name: string } => row.name !== undefined).map(row => row.name)
-}
-
-/** Read one installed Bundle's patch text from either resolution root. */
-async function readInstalledBundlePatch(home: string, profileName: string, bundleName: string, patch: string): Promise<string | undefined> {
+/** Loader row ids registered by one installed Bundle patch. */
+async function installedBundlePatchIds(home: string, profileName: string, bundleName: string, patch: string | string[]): Promise<Set<string>> {
+  const ids = new Set<string>()
   const segments = bundleName.split('/')
   const candidates = [
+    ...(desktopRuntimeRoot() ? [join(desktopRuntimeRoot()!, 'node_modules', ...segments)] : []),
     join(home, 'profiles', profileName, 'node_modules', ...segments),
     join(home, 'profiles', 'node_modules', ...segments),
   ]
   for (const candidate of candidates) {
     try {
-      return await readFile(join(candidate, patch), 'utf8')
+      for (const file of Array.isArray(patch) ? patch : [patch]) {
+        const patchText = await readFile(join(candidate, file), 'utf8')
+        for (const id of insertedLoaderIds(patchText)) ids.add(id)
+      }
+      break
     } catch {
-      // Try the next resolution root; a missing patch yields undefined.
+      // Try the next resolution root; a missing patch leaves an empty set.
     }
   }
-  return undefined
-}
-
-/** Loader row ids registered by one installed Bundle patch. */
-async function installedBundlePatchIds(home: string, profileName: string, bundleName: string, patch: string): Promise<Set<string>> {
-  const ids = new Set<string>()
-  const patchText = await readInstalledBundlePatch(home, profileName, bundleName, patch)
-  if (patchText === undefined) return ids
-  for (const id of insertedLoaderIds(patchText)) ids.add(id)
   return ids
-}
-
-/**
- * The set of package names treated as official built-ins for a Profile:
- * every @deepseek-ai/* bundle plus every loader row name its patches insert.
- */
-async function officialBundleNames(home: string, profileName: string, bundles: JsonObject[]): Promise<Set<string>> {
-  const official = new Set<string>()
-  const pending: { name: string; patch: string }[] = []
-  for (const bundle of bundles) {
-    if (typeof bundle.name !== 'string' || !bundle.name.startsWith('@deepseek-ai/')) continue
-    official.add(bundle.name)
-    if (typeof bundle.patch === 'string' && bundle.patch.trim() !== '') pending.push({ name: bundle.name, patch: bundle.patch })
-  }
-  for (const item of pending) {
-    const patchText = await readInstalledBundlePatch(home, profileName, item.name, item.patch)
-    if (patchText === undefined) continue
-    for (const name of insertedLoaderNames(patchText)) official.add(name)
-  }
-  return official
 }
 
 
@@ -641,16 +499,14 @@ async function listProfiles(home: string): Promise<JsonObject[]> {
         // exported as an active Bundle.
         const composedBundles = Array.isArray(bundles) ? bundles.filter((name): name is string => typeof name === 'string') : []
         const activePlugins = new Set(composedBundles)
-        const scannedBundles = await listInstalledBundles(
+        const installedBundles = (await listInstalledBundles(
           join(root, entry.name, 'node_modules'),
           join(root, 'node_modules'),
-        )
-        const officialNames = await officialBundleNames(home, entry.name, scannedBundles)
-        const installedBundles = scannedBundles
-          .map(bundle => ({
+        ))
+          .map((bundle): JsonObject & { active: boolean; official: boolean } => ({
             ...bundle,
             active: activePlugins.has(String(bundle.name)),
-            official: officialNames.has(String(bundle.name)),
+            official: isOfficialPackage(String(bundle.name)),
           }))
           // A Profile's plugin list is its declared Bundles plus any
           // dependency that is itself an installed Bundle package. Packages
@@ -661,8 +517,8 @@ async function listProfiles(home: string): Promise<JsonObject[]> {
         const activeRowIds = new Set<string>()
         const installedRowIds = new Map<string, Set<string>>()
         for (const bundle of installedBundles) {
-          if (typeof bundle.patch !== 'string') continue
-          const rowIds = await installedBundlePatchIds(home, entry.name, String(bundle.name), bundle.patch)
+          if (typeof bundle.patch !== 'string' && !Array.isArray(bundle.patch)) continue
+          const rowIds = await installedBundlePatchIds(home, entry.name, String(bundle.name), bundle.patch as string | string[])
           installedRowIds.set(String(bundle.name), rowIds)
           if (bundle.active === true) for (const id of rowIds) activeRowIds.add(id)
         }
@@ -722,7 +578,7 @@ async function readInstalledVersion(packageRoot: string): Promise<string | undef
 async function createProfile(home: string, body: JsonObject, workspace: { root: string; exports: string; work: string; history: string }): Promise<JsonObject> {
   const profileName = safeName(body.profileName, 'profileName')
   if (profileName === '.' || profileName === '..' || profileName === 'node_modules') {
-    const error = operationDiagnostic('PROFILE_NAME_RESERVED', 'planning', profileName, `Profile name is reserved: ${profileName}`, 'The requested Profile was not created.', 'Choose another Profile name and retry.', 'create-profile')
+    const error = operationDiagnostic('PROFILE_NAME_RESERVED', 'planning', profileName, `Profile name is reserved: ${profileName}`, 'The requested Profile was not created.', 'Choose another Profile name and retry.')
     return { status: 'failed', command: 'create-profile', exitCode: 2, error }
   }
   const profilesRoot = join(home, 'profiles')
@@ -730,29 +586,37 @@ async function createProfile(home: string, body: JsonObject, workspace: { root: 
   const profileRelative = relative(profilesRoot, resolve(profileDir))
   if (!profileRelative || profileRelative.startsWith('..') || profileRelative.includes('\\')) throw new Error('profileName escaped DSH_HOME')
   try {
-    await access(join(profileDir, 'package.json'))
-    const error = operationDiagnostic('PROFILE_EXISTS', 'planning', profileName, `Profile already exists: ${profileName}`, 'No Profile was created or modified.', 'Choose a different Profile name, or delete the existing Profile first.', 'create-profile')
+    await lstat(profileDir)
+    const error = operationDiagnostic('PROFILE_EXISTS', 'planning', profileName, `Profile already exists: ${profileName}`, 'No Profile was created or modified.', 'Choose a different Profile name, or delete the existing Profile first.')
     return { status: 'failed', command: 'create-profile', exitCode: 2, error }
-  } catch {
+  } catch (error) {
+    if (!isCommandNotFound(error)) throw error
     // Expected: the Profile does not exist yet.
   }
 
-  const officialBase = await readInstalledVersion(join(profilesRoot, 'node_modules', '@deepseek-ai', 'dsh-base'))
-  const officialWeb = await readInstalledVersion(join(profilesRoot, 'node_modules', '@deepseek-ai', 'dsh-web-app'))
+  if (!desktopRuntimeRoot() && !process.env.DSH_PACK_PNPM_COMMAND) {
+    const error = operationDiagnostic('PACKAGE_MANAGER_REQUIRED', 'planning', profileName,
+      'A trusted pnpm command is required to create a managed Profile.',
+      'The requested Profile was not created.', 'Use the official Desktop runtime or configure DSH_PACK_PNPM_COMMAND explicitly.')
+    return { status: 'failed', command: 'create-profile', exitCode: 2, error }
+  }
+
+  const officialModules = desktopRuntimeRoot() ? join(desktopRuntimeRoot()!, 'node_modules') : join(profilesRoot, 'node_modules')
+  const officialBase = await readInstalledVersion(join(officialModules, '@deepseek-ai', 'dsh-base'))
+  const officialWeb = await readInstalledVersion(join(officialModules, '@deepseek-ai', 'dsh-web-app'))
   if (officialBase === undefined || officialWeb === undefined) {
     const missing = officialBase === undefined ? '@deepseek-ai/dsh-base' : '@deepseek-ai/dsh-web-app'
-    const error = operationDiagnostic('OFFICIAL_BUNDLE_MISSING', 'planning', profileName, `cannot resolve official bundle version: ${missing}`, 'The requested Profile was not created.', `Install the official DSH bundles into this DSH_HOME first (${profilesRoot}/node_modules), then retry.`, 'create-profile')
+    const error = operationDiagnostic('OFFICIAL_BUNDLE_MISSING', 'planning', profileName, `cannot resolve official bundle version: ${missing}`, 'The requested Profile was not created.', `Install the official DSH bundles into this DSH_HOME first (${profilesRoot}/node_modules), then retry.`)
     return { status: 'failed', command: 'create-profile', exitCode: 2, error }
   }
   const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)))
   const sourceManifest = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')) as JsonObject
   const crateVersion = typeof sourceManifest.version === 'string' ? sourceManifest.version : undefined
   if (crateVersion === undefined) {
-    const error = operationDiagnostic('CRATE_VERSION_MISSING', 'planning', profileName, 'DSH Crate package version is missing', 'The requested Profile was not created.', 'Repair the DSH Crate installation and retry.', 'create-profile')
+    const error = operationDiagnostic('CRATE_VERSION_MISSING', 'planning', profileName, 'DSH Crate package version is missing', 'The requested Profile was not created.', 'Repair the DSH Crate installation and retry.')
     return { status: 'failed', command: 'create-profile', exitCode: 2, error }
   }
 
-  await mkdir(profileDir, { recursive: true })
   const manifest = {
     name: `dsh-profile-${profileName}`,
     private: true,
@@ -763,10 +627,47 @@ async function createProfile(home: string, body: JsonObject, workspace: { root: 
     },
     dsh: { profile: { bundles: [...DEFAULT_CREATE_BUNDLES] } },
   }
-  await writeFile(join(profileDir, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
-  await writeFile(join(profileDir, 'cordis.patch.yml'), PROFILE_PATCH_TEMPLATE, 'utf8')
-  await writeFile(join(profileDir, 'pnpm-workspace.yaml'), PROFILE_PNPM_WORKSPACE, 'utf8')
-  await ensureCrateBundleInAllProfiles(home)
+  // Export a private, empty seed Home. Only Import creates the visible target,
+  // using the same manager-owned installation and atomic commit as restoration.
+  const seedRoot = join(workspace.work, `create-${randomUUID()}`)
+  await mkdir(seedRoot)
+  try {
+    const seedProfile = join(seedRoot, 'profiles', profileName)
+    await mkdir(seedProfile, { recursive: true })
+    await writeFile(join(seedProfile, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
+    await writeFile(join(seedProfile, 'cordis.yml'), '[]\n', 'utf8')
+    await writeFile(join(seedProfile, 'cordis.patch.yml'), PROFILE_PATCH_TEMPLATE, 'utf8')
+    await writeFile(join(seedProfile, 'pnpm-workspace.yaml'), PROFILE_PNPM_WORKSPACE, 'utf8')
+    await copyPackage(packageRoot, join(seedProfile, 'node_modules', ...CRATE_PACKAGE_NAME.split('/')))
+    const pack = join(seedRoot, 'new-profile.dshcrate')
+    const exported = await runCore(home, ['export', '--profile', seedProfile, '--output', pack,
+      '--preset', 'freeze', ...DEFAULT_CREATE_BUNDLES.flatMap(name => ['--embed', name]), '--json', ...runtimeCoreArgs()])
+    const exportResult = parseCore(exported.stdout)
+    if (exported.code !== 0) {
+      return { status: 'failed', command: 'create-profile', exitCode: exported.code,
+        stage: 'export', error: coreDiagnostic(exportResult, 'Could not prepare the empty Profile seed.') }
+    }
+    const imported = await runCore(home, ['import', pack, '--dsh-home', home, '--target-profile', profileName,
+      '--offline', '--json', ...runtimeCoreArgs()])
+    const importResult = parseCore(imported.stdout)
+    if (imported.code !== 0 || !isObject(importResult) || importResult.status !== 'prepared') {
+      return { status: 'failed', command: 'create-profile', exitCode: imported.code || 2,
+        stage: 'import', error: coreDiagnostic(importResult, 'The new managed Profile could not be prepared.') }
+    }
+  } finally {
+    // Only remove this operation's exclusively-created seed, never the target.
+    try {
+      const actual = await realpath(seedRoot)
+      const base = await realpath(workspace.work)
+      const leaf = relative(base, actual)
+      const homeRelative = relative(await realpath(home), actual)
+      if (!leaf || isAbsolute(leaf) || leaf.startsWith('..') || isAbsolute(homeRelative) || homeRelative.startsWith('..') || (await lstat(seedRoot)).isSymbolicLink()) throw new Error('Unsafe Profile seed cleanup path')
+      await rm(seedRoot, { recursive: true, force: true })
+    } catch {
+      await record(workspace.history, { time: new Date().toISOString(), action: 'create-profile-cleanup',
+        status: 'FAIL', profile: profileName, message: 'Temporary seed cleanup failed; committed targets were not removed.', seedRoot })
+    }
+  }
   const item = await record(workspace.history, { time: new Date().toISOString(), action: 'create-profile', status: 'PASS', profile: profileName })
   const row = (await listProfiles(home)).find(candidate => candidate.name === profileName)
   return { status: 'ok', command: 'create-profile', exitCode: 0, profile: row ?? { name: profileName, plugins: DEFAULT_CREATE_BUNDLES, installedBundles: [] }, history: item }
@@ -775,24 +676,12 @@ async function createProfile(home: string, body: JsonObject, workspace: { root: 
 async function handleApi(home: string, body: JsonObject, runtimePlugins: JsonObject[] = []): Promise<JsonObject> {
   const action = body.action as Action
   const workspace = await ensureWorkspace(home)
-  await ensureCrateBundleInAllProfiles(home)
   if (action === 'profiles') {
     const runtime = currentRuntime(home)
-    const profiles = await listProfiles(home)
-    const runtimeOfficialNames = new Set<string>()
-    const runtimeRow = typeof runtime.currentProfile === 'string'
-      ? profiles.find(candidate => candidate.name === runtime.currentProfile)
-      : undefined
-    if (runtimeRow !== undefined && Array.isArray(runtimeRow.installedBundles)) {
-      const names = await officialBundleNames(home, String(runtimeRow.name), runtimeRow.installedBundles as JsonObject[])
-      for (const name of names) runtimeOfficialNames.add(name)
-    }
-    const isOfficialRow = (row: JsonObject): boolean => {
-      const name = typeof row.name === 'string' ? row.name : ''
-      return isOfficialPackage(name) || runtimeOfficialNames.has(name)
-    }
+    const isOfficialRow = (row: JsonObject): boolean =>
+      typeof row.name === 'string' && isOfficialPackage(row.name)
     const classifiedPlugins = runtimePlugins.map(row => ({ ...row, official: isOfficialRow(row) }))
-    return { status: 'ok', profiles, runtimePlugins: classifiedPlugins, runtime }
+    return { status: 'ok', profiles: await listProfiles(home), runtimePlugins: classifiedPlugins, runtime }
   }
   if (action === 'create-profile') return createProfile(home, body, workspace)
   if (action === 'history') return { status: 'ok', history: await readHistory(workspace.history) }
@@ -804,6 +693,7 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: JsonObj
       const result = parseCore(run.stdout)
       let targetProfile: string | undefined
       let requestedProfileName: string | undefined
+      let planFailure: JsonObject | undefined
       try {
         const planArgs = ['import', pack, '--dsh-home', home, '--plan-only', '--json', ...runtimeCoreArgs()]
         if (typeof body.targetProfile === 'string') planArgs.push('--target-profile', safeName(body.targetProfile, 'targetProfile'))
@@ -815,38 +705,64 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: JsonObj
             if (typeof planned.plan.profileName === 'string') targetProfile = planned.plan.profileName
             if (typeof planned.plan.requestedProfileName === 'string') requestedProfileName = planned.plan.requestedProfileName
           }
+        } else {
+          const diagnostic = coreDiagnostic(parseCore(planRun.stdout), planRun.stderr || 'Import planning failed')
+          // The new-Profile dialog chooses a name after Inspect. An occupied
+          // default name is therefore deferred to that explicit choice; Home
+          // data collisions and all other planning failures remain blockers.
+          if (!(diagnostic.code === 'PROFILE_EXISTS' && body.targetProfile === undefined && body.overwrite !== true)) planFailure = diagnostic
         }
-      } catch {
-        // Preflight remains useful even when an optional target plan cannot be built.
+      } catch (error) {
+        planFailure = coreDiagnostic(undefined, failMessage(error))
       }
       const enriched = isObject(result)
-        ? { ...result, ...(targetProfile ? { targetProfile } : {}), ...(requestedProfileName ? { requestedProfileName } : {}) }
+        ? { ...result, ...(targetProfile ? { targetProfile } : {}), ...(requestedProfileName ? { requestedProfileName } : {}),
+            ...(planFailure ? { canContinue: false, error: planFailure } : {}) }
         : result
       return { status: 'ok', command: action, exitCode: run.code, result: enriched }
     } catch {
-      return { status: 'failed', command: action, exitCode: run.code, error: coreDiagnostic(undefined, run.stderr || run.stdout || 'dsh-crate inspect failed', action) }
+      return { status: 'failed', command: action, exitCode: run.code, error: coreDiagnostic(undefined, run.stderr || run.stdout || 'dsh-crate inspect failed') }
     }
   }
 
-  if (action === 'export') {
+  if (action === 'export' || action === 'export-plan') {
     const profileName = safeName(body.profileName, 'profileName')
     const profile = join(home, 'profiles', profileName)
     const profileRelative = relative(join(home, 'profiles'), resolve(profile))
     if (!profileRelative || profileRelative.startsWith('..') || profileRelative.includes('\\')) throw new Error('profileName escaped DSH_HOME')
     const outputName = `${profileName}-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}.dshcrate`
     const args = ['export', '--profile', profile, '--output', join(workspace.exports, outputName), '--json', ...runtimeCoreArgs()]
+    if (action === 'export-plan') args.push('--plan-only')
+    if (typeof body.preset === 'string') args.push('--preset', body.preset)
     if (body.includeInstalledBundles === true) args.push('--include-installed-bundles')
     const embed = Array.isArray(body.embed) ? body.embed : []
     const referenceOnly = Array.isArray(body.referenceOnly) ? body.referenceOnly : []
     for (const name of embed) args.push('--embed', safePluginName(name, 'embed plugin'))
     for (const name of referenceOnly) args.push('--reference-only', safePluginName(name, 'reference-only plugin'))
+    if (body.requiredSecrets !== undefined && !Array.isArray(body.requiredSecrets)) throw new Error('requiredSecrets must be an array of environment variable names')
     const requiredSecrets = Array.isArray(body.requiredSecrets) ? body.requiredSecrets : []
-    for (const name of requiredSecrets) args.push('--required-secret', safeName(name, 'required Secret'))
-    const run = await runCore(home, args)
+    for (const name of requiredSecrets) {
+      if (typeof name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error('requiredSecrets accepts environment variable names only; never supply Secret values')
+      args.push('--required-secret', name)
+    }
+    let selectionPath: string | undefined
+    if (body.dataSelection !== undefined) {
+      if (!Array.isArray(body.dataSelection)) throw new Error('dataSelection must be an array')
+      selectionPath = join(workspace.work, 'selection-' + randomUUID() + '.json')
+      await writeFile(selectionPath, JSON.stringify(body.dataSelection), { encoding: 'utf8', flag: 'wx' })
+      args.push('--data-selection-json', selectionPath)
+    }
+    const run = await runCore(home, args).finally(async () => {
+      if (selectionPath) await rm(selectionPath, { force: true })
+    })
     let result: unknown
     try { result = parseCore(run.stdout) } catch { result = undefined }
+    if (action === 'export-plan') {
+      return { status: run.code === 0 ? 'ok' : 'failed', command: action, exitCode: run.code, result,
+        ...(run.code === 0 ? {} : { error: coreDiagnostic(result, run.stderr || 'Export preview failed') }) }
+    }
     if (run.code !== 0 || result === undefined) {
-      const failure = { status: 'failed', action, exitCode: run.code, error: coreDiagnostic(result, run.stderr || run.stdout || 'dsh-crate export failed', action), result }
+      const failure = { status: 'failed', action, exitCode: run.code, error: coreDiagnostic(result, run.stderr || run.stdout || 'dsh-crate export failed'), result }
       await record(workspace.history, { time: new Date().toISOString(), action, status: 'FAIL', profile: profileName, message: String(failure.error.message ?? 'dsh-crate export failed'), code: failure.error.code, stage: failure.error.stage })
       return failure
     }
@@ -865,11 +781,10 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: JsonObj
     try { result = parseCore(run.stdout) } catch { result = undefined }
     if (run.code !== 0 || result === undefined) {
       const message = run.stderr || run.stdout || 'dsh-crate import failed'
-      const failure = { status: 'failed', action, exitCode: run.code, error: coreDiagnostic(result, message, action), result }
+      const failure = { status: 'failed', action, exitCode: run.code, error: coreDiagnostic(result, message), result }
       await record(workspace.history, { time: new Date().toISOString(), action, status: 'FAIL', message: String(failure.error.message ?? message), code: failure.error.code, stage: failure.error.stage })
       return failure
     }
-    await ensureCrateBundleInAllProfiles(home)
     const prepared = result as JsonObject
     const plan = prepared.plan
     const profileName = plan !== null && typeof plan === 'object' && !Array.isArray(plan) && typeof (plan as JsonObject).profileName === 'string'
@@ -898,7 +813,7 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: JsonObj
     const profileName = safeName(body.profileName, 'profileName')
     const running = currentRuntime(home)
     if (running.currentProfile === profileName) {
-      const error = operationDiagnostic('ACTIVE_PROFILE', 'planning', profileName, `cannot delete the active Profile: ${profileName}`, 'The running DSH process would lose its Profile files.', 'Switch to another Profile first, then delete this Profile.', 'delete-profile')
+      const error = operationDiagnostic('ACTIVE_PROFILE', 'planning', profileName, `cannot delete the active Profile: ${profileName}`, 'The running DSH process would lose its Profile files.', 'Switch to another Profile first, then delete this Profile.')
       return { status: 'failed', command: action, exitCode: 2, error }
     }
     const args = ['delete-profile', '--dsh-home', home, '--profile', profileName, '--json']
@@ -908,7 +823,7 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: JsonObj
     try { result = parseCore(run.stdout) } catch { result = undefined }
     if (run.code !== 0 || result === undefined) {
       const message = run.stderr || run.stdout || 'dsh-crate Profile deletion failed'
-      const failure = { status: 'failed', action, exitCode: run.code, error: coreDiagnostic(result, message, action), result }
+      const failure = { status: 'failed', action, exitCode: run.code, error: coreDiagnostic(result, message), result }
       await record(workspace.history, { time: new Date().toISOString(), action, status: 'FAIL', profile: profileName, message: String(failure.error.message ?? message), code: failure.error.code, stage: failure.error.stage })
       return failure
     }
@@ -933,11 +848,11 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: JsonObj
   if (action === 'switch-profile') {
     const profileName = safeName(body.profileName, 'profileName')
     if (body.confirmSwitch !== true) {
-      return { status: 'failed', command: action, exitCode: 2, error: operationDiagnostic('SWITCH_CONFIRMATION_REQUIRED', 'planning', profileName, 'switching Profile requires explicit confirmation', 'The current DSH process was not changed.', 'Confirm the switch and retry.', 'switch-profile') }
+      return { status: 'failed', command: action, exitCode: 2, error: operationDiagnostic('SWITCH_CONFIRMATION_REQUIRED', 'planning', profileName, 'switching Profile requires explicit confirmation', 'The current DSH process was not changed.', 'Confirm the switch and retry.') }
     }
     const available = await listProfiles(home)
     if (!available.some(profile => profile.name === profileName)) {
-      return { status: 'failed', command: action, exitCode: 2, error: operationDiagnostic('PROFILE_MISSING', 'planning', profileName, `Profile does not exist: ${profileName}`, 'The current DSH process was not changed.', 'Choose an existing Profile and retry.', 'switch-profile') }
+      return { status: 'failed', command: action, exitCode: 2, error: operationDiagnostic('PROFILE_MISSING', 'planning', profileName, `Profile does not exist: ${profileName}`, 'The current DSH process was not changed.', 'Choose an existing Profile and retry.') }
     }
     const runtime = currentRuntime(home)
     const oldProfile = typeof runtime.currentProfile === 'string' ? runtime.currentProfile : undefined
@@ -954,7 +869,7 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: JsonObj
       }
     }
     if (runtime.restartConfigured !== true || typeof process.argv[1] !== 'string' || typeof runtime.port !== 'number') {
-      return { status: 'failed', command: action, exitCode: 2, error: operationDiagnostic('RESTART_NOT_CONFIGURED', 'planning', profileName, 'the current DSH launch command cannot be safely reconstructed', 'The current DSH process was not changed.', 'Start DSH with an explicit --profile and --port, or configure the DSH Crate restart launcher.', 'switch-profile') }
+      return { status: 'failed', command: action, exitCode: 2, error: operationDiagnostic('RESTART_NOT_CONFIGURED', 'planning', profileName, 'the current DSH launch command cannot be safely reconstructed', 'The current DSH process was not changed.', 'Start DSH with an explicit --profile and --port, or configure the DSH Crate restart launcher.') }
     }
     const operationId = randomUUID()
     const reportPath = join(workspace.work, `switch-${operationId}.json`)
@@ -980,21 +895,27 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: JsonObj
     const profileName = safeName(body.profileName, 'profileName')
     const mode = body.mode === undefined ? 'web' : body.mode
     if (mode !== 'web' && mode !== 'headless') throw new Error('mode must be web or headless')
-    const args = ['verify', '--dsh-home', home, '--profile', profileName, '--mode', mode, '--json', ...runtimeCoreArgs()]
-    let runnerConfigPath: string | undefined
-    if (body.runnerConfig !== undefined) {
-      if (!isObject(body.runnerConfig)) throw new Error('runnerConfig must be a JSON object')
-      const verifyDir = join(workspace.work, 'verify')
-      await mkdir(verifyDir, { recursive: true })
-      runnerConfigPath = join(verifyDir, 'verify-' + randomUUID() + '.json')
-      await writeFile(runnerConfigPath, JSON.stringify(body.runnerConfig, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' })
-      args.push('--runner-config', runnerConfigPath)
-    }
-    const run = await runCore(home, args)
+    const prepared = await prepareVerifyArgs(
+      ['verify', '--dsh-home', home, '--profile', profileName, '--mode', mode, '--json', ...runtimeCoreArgs()],
+      {
+        mode,
+        profilePath: join(home, 'profiles', profileName),
+        workDirectory: join(workspace.work, 'verify'),
+        requestConfig: body.runnerConfig,
+        configuredPath: process.env.DSH_PACK_VERIFY_RUNNER_CONFIG,
+        defaultConfig: process.platform === 'win32' && mode === 'web' && desktopRuntimeRoot() ? {
+          kind: 'desktop', mode: 'web', desktopExecutable: process.execPath,
+          runtimeRoot: desktopRuntimeRoot(),
+          controllerScript: join(dirname(dirname(fileURLToPath(import.meta.url))), 'verify-desktop.mjs'),
+          maximumBoots: 1, modelRequests: 0, automaticRetries: 0,
+        } : undefined,
+      },
+    )
+    const run = await runCore(home, prepared.args)
     let result: unknown
     try { result = parseCore(run.stdout) } catch { result = undefined }
     if (result === undefined) {
-      return { status: 'failed', action, exitCode: run.code, error: coreDiagnostic(undefined, run.stderr || run.stdout || 'dsh-crate verify failed', action) }
+      return { status: 'failed', action, exitCode: run.code, error: coreDiagnostic(undefined, run.stderr || run.stdout || 'dsh-crate verify failed') }
     }
     const resultObject = isObject(result) ? result : {}
     const status = typeof resultObject.status === 'string' ? resultObject.status : 'FAIL'
@@ -1028,16 +949,26 @@ async function handleDownload(home: string, req: IncomingMessage, res: ServerRes
 }
 
 /** Register the host bridge. The Core executable is intentionally external. */
-export const inject = ['webServer']
+export const inject = ['webServer', 'connection']
 
-export function apply(ctx: Context): void {
+export function apply(ctx: Context, config: WindowsTerminalConfig = {}): void {
   const home = resolve(process.env.DSH_HOME || process.cwd())
-  void ensureCrateBundleInAllProfiles(home).catch(error => console.error(`dsh-crate-web: failed to ensure Profile invariant: ${failMessage(error)}`))
+  const terminalRuntime = windowsTerminalRuntime(config)
+  if (terminalRuntime) {
+    ctx.inject(['sandbox'], (scoped) => {
+      scoped.effect(async () => {
+        const args = await prepareWindowsRunner(home, terminalRuntime)
+        return installWindowsRunnerHook((scoped as unknown as { sandbox: SandboxHook }).sandbox, args)
+      }, 'dsh-crate-web: optional Windows terminal host')
+    })
+  }
+  const connection = (ctx as unknown as { connection?: { requestRejection(req: unknown): number | undefined } }).connection
   ctx.effect(() => {
     const disposeApi = ctx.webServer.register({
       kind: 'exact',
       path: API_PATH,
       handler: async (req, res) => {
+        if (rejectRequest(connection, req, res)) return
         if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
         try {
           const result = await handleApi(home, await readRequest(req), listRuntimePlugins(ctx))
@@ -1050,7 +981,10 @@ export function apply(ctx: Context): void {
     const disposeDownload = ctx.webServer.register({
       kind: 'exact',
       path: DOWNLOAD_PATH,
-      handler: (req, res) => { void handleDownload(home, req, res).catch(error => json(res, 404, { status: 'failed', error: { message: failMessage(error) } })) },
+      handler: (req, res) => {
+        if (rejectRequest(connection, req, res)) return
+        void handleDownload(home, req, res).catch(error => json(res, 404, { status: 'failed', error: { message: failMessage(error) } }))
+      },
     })
     return () => { disposeApi(); disposeDownload() }
   }, 'dsh-crate-web: local Core bridge')

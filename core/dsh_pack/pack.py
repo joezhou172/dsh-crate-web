@@ -8,7 +8,7 @@ import json
 import os
 import tempfile
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,7 @@ from .validation import (
     validate_manifest,
     validate_payload_key,
     validate_plugins_lock,
+    validate_format_pair,
 )
 
 
@@ -58,6 +59,7 @@ class PackData:
     profile_files: dict[str, bytes | str]
     plugins_lock: dict[str, Any]
     plugin_artifacts: dict[str, bytes | str]
+    user_data: dict[str, bytes] = field(default_factory=dict)
 
 
 def _normalise_data(data: PackData) -> tuple[dict[str, Any], dict[str, bytes], dict[str, Any], dict[str, bytes]]:
@@ -72,6 +74,7 @@ def _normalise_data(data: PackData) -> tuple[dict[str, Any], dict[str, bytes], d
     validate_manifest(manifest)
     artifact_paths = {f"plugins/{name}" for name in plugin_artifacts}
     validate_plugins_lock(plugins_lock, artifact_paths=artifact_paths)
+    validate_format_pair(manifest, plugins_lock)
     _validate_artifact_hashes(plugins_lock, plugin_artifacts)
     return manifest, profile_files, plugins_lock, plugin_artifacts
 
@@ -122,8 +125,12 @@ def create(data: PackData, destination: str | os.PathLike[str]) -> Path:
     """
 
     manifest, profile_files, plugins_lock, plugin_artifacts = _normalise_data(data)
+    from .portability import validate_inventory
+    user_data = _file_map(data.user_data, "user_data", "user-data")
+    validate_inventory(manifest, user_data, plugins_lock)
     lock_bytes = _json_bytes(plugins_lock)
     entries = _payload_entries(profile_files, lock_bytes, plugin_artifacts)
+    entries.update({f"user-data/{name}": content for name, content in user_data.items()})
     manifest["integrity"] = {
         "algorithm": "sha256",
         "files": {name: sha256_bytes(content) for name, content in entries.items()},
@@ -160,7 +167,7 @@ def _validate_archive_member(name: str) -> str:
     canonical = validate_archive_path(name)
     if canonical == "manifest.json" or canonical == "plugins.lock.json":
         return canonical
-    if canonical.startswith("profile/") or canonical.startswith("plugins/"):
+    if canonical.startswith("profile/") or canonical.startswith("plugins/") or canonical.startswith("user-data/"):
         return canonical
     raise PathSafetyError(f"unsupported Pack member path: {name!r}")
 
@@ -239,8 +246,13 @@ def read(source: str | os.PathLike[str]) -> PackData:
         plugins_lock,
         artifact_paths={f"plugins/{name}" for name in plugin_artifacts},
     )
+    validate_format_pair(manifest, plugins_lock)
     _validate_artifact_hashes(plugins_lock, plugin_artifacts)
+    from .portability import validate_inventory
+    user_data = {name[len("user-data/"):]: content for name, content in entries.items() if name.startswith("user-data/")}
+    validate_inventory(manifest, user_data, plugins_lock)
     return PackData(
+        user_data=user_data,
         manifest=manifest,
         profile_files=profile_files,
         plugins_lock=plugins_lock,

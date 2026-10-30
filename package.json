@@ -1,10 +1,10 @@
 {
   "name": "dsh-crate-web",
   "description": "DSH Web Settings surface for DSH Crate export, import, inspect, and history",
-  "version": "0.1.1",
+  "version": "0.1.2-preview.1",
   "type": "module",
   "main": "lib/index.js",
-  "types": "lib/types/index.d.ts",
+  "types": "lib/index.d.ts",
   "exports": {
     ".": {
       "types": "./lib/index.d.ts",
@@ -21,12 +21,19 @@
     "lib/client.js",
     "lib/*.d.ts",
     "restart-helper.mjs",
+    "verify-desktop.mjs",
+    "desktop-patch-helper.mjs",
     "cordis.patch.yml",
     "core/dsh_pack/**/*.py",
-    "runtime/python"
+    "runtime/python",
+    "skills/dsh-crate-troubleshooting/SKILL.md",
+    "skills/dsh-crate-troubleshooting/compatibility.json",
+    "skills/dsh-crate-troubleshooting/reference/*.md",
+    "THIRD-PARTY-LICENSE.txt"
   ],
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "tag": "preview"
   },
   "license": "MIT",
   "dsh": {
@@ -46,6 +53,7 @@
     "bundle": "node scripts/vendor-core.mjs && node scripts/prepare-runtime.mjs && tsdown"
   },
   "peerDependencies": {
+    "@deepseek-ai/dsh-client-connection": "*",
     "@deepseek-ai/cordis": "^4.0.0",
     "@deepseek-ai/dsh-client-locale": "*",
     "@deepseek-ai/dsh-client-runtime": "*",
@@ -68,7 +76,6 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/joezhou172/dsh-crate-web.git"
-  },
-  "author": "joezhou172 <rdhwhyhrg@163.com>"
+    "url": "git+https://github.com/joezhou172/dsh-crate-web.git"
+  }
 }

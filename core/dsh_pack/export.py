@@ -24,7 +24,8 @@ from typing import Any, Mapping, Sequence
 
 from .errors import DshPackError, ExportError
 from .pack import PackData, create, sha256_bytes
-from .validation import validate_payload_key
+from .validation import validate_payload_key, bundle_patch_paths
+from .bundle import read_bundle_patches, check_bundle_artifact
 
 
 REFERENCE_ONLY = "reference-only"
@@ -83,6 +84,8 @@ class ExportOptions:
     plugin_options: Mapping[str, PluginExportOptions] = field(default_factory=dict)
     npm_command: str | None = None
     include_installation_bundles: bool = False
+    export_mode: str = "custom"
+    data_selection: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -132,56 +135,14 @@ def _string(value: Any, path: str) -> str:
 
 
 def _source_type(specifier: str) -> str:
+    if specifier == "unknown":
+        return "unknown"
     for source_type, prefixes in _SOURCE_TYPE_PREFIXES.items():
         if specifier.startswith(prefixes):
             return source_type
     if specifier.startswith("npm:"):
         return "alias"
     return "registry"
-
-
-def _repository_specifier(package_manifest: Mapping[str, Any]) -> str | None:
-    """Return a portable source locator from npm ``repository`` metadata.
-
-    DSH installation-anchor Bundles are not always listed in the Profile's
-    dependency map.  In that case the installed package manifest is the last
-    authoritative local source record we have.  Keep the locator in the Pack
-    instead of silently falling back to a package name with ``unknown``.
-    """
-
-    repository = package_manifest.get("repository")
-    if isinstance(repository, str):
-        candidate = repository.strip()
-    elif isinstance(repository, Mapping):
-        candidate = repository.get("url")
-        if not isinstance(candidate, str):
-            return None
-        candidate = candidate.strip()
-    else:
-        return None
-    if not candidate:
-        return None
-    if candidate.startswith(("git:", "git+", "github:", "ssh://", ".git")):
-        return candidate
-    if candidate.startswith(("http://", "https://")):
-        return f"git+{candidate}"
-    return candidate
-
-
-def _effective_specifier(
-    package_name: str,
-    specifier: str,
-    package_manifest: Mapping[str, Any],
-) -> str:
-    if specifier != "unknown":
-        return specifier
-    inferred = _repository_specifier(package_manifest)
-    if inferred:
-        return inferred
-    raise ExportError(
-        f"cannot export {package_name}: package source is unavailable; "
-        "Profile dependency specifier or package.json.repository is required"
-    )
 
 
 @dataclass(frozen=True)
@@ -348,23 +309,46 @@ def _package_path(profile_dir: Path, package_name: str) -> Path:
     return profile_dir / "node_modules" / Path(*package_name.split("/"))
 
 
-def _installed_package(profile_dir: Path, package_name: str) -> tuple[Path, dict[str, Any]]:
-    # DSH resolves Bundle layers from the installation anchor first and then
-    # from the Profile.  Its healer exposes the installation dependency
-    # closure at ``$DSH_HOME/profiles/node_modules``.  For a Profile under
-    # ``.../profiles/<name>``, that fallback is the parent node_modules
-    # directory.  Keep the Profile-local lookup first so user-installed
-    # dependencies retain normal Node nearest-wins semantics.
-    package_paths = [_package_path(profile_dir, package_name)]
-    fallback_path = profile_dir.parent / "node_modules" / Path(*package_name.split("/"))
-    if fallback_path not in package_paths:
-        package_paths.append(fallback_path)
+def _installation_module_roots(profile_dir: Path) -> list[Path]:
+    """返回可读取的安装锚点；桌面 Host 负责物化 ASAR 中选定的包。"""
+    roots: list[Path] = []
+    configured = os.environ.get("DSH_PACK_RUNTIME_MODULES", "").strip()
+    if configured:
+        explicit = Path(configured)
+        if not explicit.is_absolute() or not explicit.is_dir():
+            raise ExportError(
+                "DSH_PACK_RUNTIME_MODULES must be an existing absolute node_modules directory; "
+                "Desktop ASAR packages must be materialized before Export"
+            )
+        roots.append(explicit)
+    shared = profile_dir.parent / "node_modules"
+    if shared not in roots:
+        roots.append(shared)
+    return roots
+
+
+def _installed_package(
+    profile_dir: Path, package_name: str, *, bundle: bool = False,
+) -> tuple[Path, dict[str, Any]]:
+    # Bundle composition follows DSH's installation-anchor-first lookup.
+    # Ordinary dependencies retain the Profile's nearest package precedence.
+    local = _package_path(profile_dir, package_name)
+    anchors = [root / Path(*package_name.split("/")) for root in _installation_module_roots(profile_dir)]
+    package_paths = list(dict.fromkeys([*anchors, local] if bundle else [local, *anchors]))
     for package_dir in package_paths:
         package_json = package_dir / "package.json"
         if package_json.is_file():
             return package_dir, _read_json_file(package_json, f"installed package {package_name}")
     searched = ", ".join(str(path / "package.json") for path in package_paths)
-    raise ExportError(f"installed package manifest is missing; searched: {searched}")
+    raise ExportError(
+        f"installed package manifest is missing; searched: {searched}. "
+        "Desktop ASAR sources must be materialized and exposed through DSH_PACK_RUNTIME_MODULES"
+    )
+
+
+def _runtime_source(profile_dir: Path, package_name: str, package_dir: Path) -> str:
+    """记录本次实际选取的目录来源，不能根据 dependency 请求是否存在推断。"""
+    return "profile-dependency" if package_dir == _package_path(profile_dir, package_name) else "installation-anchor"
 
 
 def _direct_package_dirs(root: Path) -> list[Path]:
@@ -393,10 +377,8 @@ def _installed_bundle_inventory(profile_dir: Path) -> list[tuple[str, Path, str,
     for an explicit "include installed Bundles" export.
     """
 
-    roots = (
-        (profile_dir / "node_modules", "profile"),
-        (profile_dir.parent / "node_modules", "installation-anchor"),
-    )
+    roots = [(root, "installation-anchor") for root in _installation_module_roots(profile_dir)]
+    roots.append((profile_dir / "node_modules", "profile"))
     found: list[tuple[str, Path, str, dict[str, Any]]] = []
     names: set[str] = set()
     for root, location in roots:
@@ -415,8 +397,8 @@ def _installed_bundle_inventory(profile_dir: Path) -> list[tuple[str, Path, str,
                 or not package_name.strip()
                 or not isinstance(package_version, str)
                 or not package_version.strip()
-                or not isinstance(patch, str)
-                or not patch.strip()
+                or not isinstance(patch, (str, list))
+                or not patch
                 or package_name in names
             ):
                 continue
@@ -463,6 +445,10 @@ def _profile_files(profile_dir: Path, destination: Path) -> dict[str, bytes]:
         if not path.is_file() or path.is_symlink():
             continue
         relative_path = path.relative_to(profile_dir)
+        # Import generates this private installation evidence from Pack
+        # artifacts. It is machine state, not declarative Profile content.
+        if relative_path.parts[0].casefold() == '.dsh-crate':
+            continue
         if any(part in _SKIP_DIRS for part in relative_path.parts):
             continue
         if relative_path.name in _SKIP_FILES:
@@ -582,25 +568,15 @@ def _assert_no_duplicate_loader_rows(profile_dir: Path, bundles: Sequence[str]) 
     registered_by: dict[str, list[str]] = {}
     for package_name in bundles:
         try:
-            package_dir, package_manifest = _installed_package(profile_dir, package_name)
+            package_dir, package_manifest = _installed_package(profile_dir, package_name, bundle=True)
         except ExportError:
             continue
         dsh = package_manifest.get("dsh") or {}
         bundle_meta = dsh.get("bundle") or {}
         patch = bundle_meta.get("patch")
-        if not isinstance(patch, str) or not patch.strip():
-            continue
-        try:
-            patch_relative = _bundle_patch_path(package_dir, package_name, patch)
-        except ExportError:
-            continue
-        patch_path = package_dir.joinpath(*patch_relative.split("/"))
-        try:
-            patch_text = patch_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        for row_id in _bundle_inserted_loader_ids(patch_text):
-            registered_by.setdefault(row_id, []).append(package_name)
+        for relative, content in read_bundle_patches(package_dir, patch):
+            for row_id in _bundle_inserted_loader_ids(content.decode("utf-8")):
+                registered_by.setdefault(row_id, []).append(f"{package_name}/{relative}")
     collisions = sorted(row_id for row_id, names in registered_by.items() if len(names) > 1)
     if not collisions:
         return
@@ -613,11 +589,11 @@ def _assert_no_duplicate_loader_rows(profile_dir: Path, bundles: Sequence[str]) 
     )
 
 
-def _validate_tarball(content: bytes, package_name: str, required_file: str | None = None) -> None:
+def _validate_tarball(content: bytes, package_name: str, required_file: str | Sequence[str] | None = None) -> None:
     from io import BytesIO
 
-    required_member = f"package/{required_file}" if required_file else None
-    found_required = False
+    required_members = {f"package/{item}" for item in bundle_patch_paths(required_file)} if required_file else set()
+    found_required: set[str] = set()
     try:
         with tarfile.open(fileobj=BytesIO(content), mode="r:gz") as archive:
             for member in archive.getmembers():
@@ -626,11 +602,11 @@ def _validate_tarball(content: bytes, package_name: str, required_file: str | No
                     raise ExportError(f"npm pack artifact contains forbidden runtime path: {package_name}")
                 if member_name.startswith("/") or "/../" in f"/{member_name}/" or member_name.startswith("../"):
                     raise ExportError(f"npm pack artifact contains unsafe path: {package_name}")
-                if required_member == member_name and member.isfile():
-                    found_required = True
+                if member_name in required_members and member.isfile():
+                    found_required.add(member_name)
     except (tarfile.TarError, OSError) as error:
         raise ExportError(f"npm pack did not produce a readable tarball: {package_name}") from error
-    if required_member and not found_required:
+    if required_members - found_required:
         raise ExportError(f"npm pack artifact is missing Bundle patch file: {package_name}/{required_file}")
 
 
@@ -639,7 +615,7 @@ def _npm_pack(
     package_name: str,
     npm_command: str,
     *,
-    required_file: str | None = None,
+    required_file: str | Sequence[str] | None = None,
 ) -> bytes:
     with tempfile.TemporaryDirectory(prefix="dsh-pack-npm-") as directory:
         cache_directory = Path(directory) / "npm-cache"
@@ -688,24 +664,22 @@ def _plugin_lock_entry(
     bundle_order: int | None,
     options: PluginExportOptions,
     npm_command: str,
-    runtime_source: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, bytes]]:
-    package_dir, package_manifest = _installed_package(profile_dir, package_name)
+    package_dir, package_manifest = _installed_package(profile_dir, package_name, bundle=bundle_order is not None)
     installed_name = _string(package_manifest.get("name", package_name), f"{package_name}.package.json.name")
     if installed_name != package_name:
         raise ExportError(
             f"installed package name mismatch: requested {package_name!r}, found {installed_name!r}"
         )
     version = _string(package_manifest.get("version"), f"{package_name}.package.json.version")
-    specifier = _effective_specifier(package_name, specifier, package_manifest)
     source_type = _source_type(specifier)
-    if source_type == "registry":
+    resolved_runtime_source = _runtime_source(profile_dir, package_name, package_dir)
+    if source_type == "registry" and resolved_runtime_source != "installation-anchor":
         semver_match = _registry_spec_satisfies(specifier, version)
         if semver_match is False:
             raise ExportError(
                 f"installed package {package_name}@{version} does not satisfy requested specifier {specifier!r}"
             )
-    resolved_runtime_source = runtime_source or ("profile-dependency" if specifier else "installation-anchor")
     dsh = package_manifest.get("dsh", {})
     if dsh is None:
         dsh = {}
@@ -717,19 +691,21 @@ def _plugin_lock_entry(
     if not isinstance(bundle_meta, dict):
         raise ExportError(f"{package_name}.package.json.dsh.bundle must be an object")
     patch = bundle_meta.get("patch")
-    patch_relative_path: str | None = None
-    if bundle_order is not None and (not isinstance(patch, str) or not patch.strip()):
-        raise ExportError(f"Bundle {package_name} is missing dsh.bundle.patch")
+    patch_relative_path: str | list[str] | None = None
     if bundle_order is not None:
-        patch_relative_path = _bundle_patch_path(package_dir, package_name, patch)
+        checked_patches = read_bundle_patches(package_dir, patch)
+        paths = [relative for relative, _ in checked_patches]
+        patch_relative_path = paths if isinstance(patch, list) else paths[0]
 
     entry: dict[str, Any] = {
         "name": package_name,
         "required": options.required,
         "requested": {"specifier": specifier, "sourceType": source_type},
         "resolved": {
-            "version": version,
-            "locator": f"registry:{package_name}@{version}" if source_type == "registry" else specifier,
+            # No pnpm importer/lock evidence is read by this exporter. A
+            # runtime manifest or repository URL cannot prove resolution.
+            "version": "unknown",
+            "locator": "unknown",
         },
         "runtime": {
             "version": version,
@@ -754,6 +730,8 @@ def _plugin_lock_entry(
             npm_command,
             required_file=patch_relative_path,
         )
+        if bundle_order is not None:
+            check_bundle_artifact(content, patch)
         artifact_file = _artifact_name(package_name, version)
         artifact_path = f"plugins/{artifact_file}"
         entry["artifact"] = {
@@ -777,6 +755,8 @@ def export_profile(
     destination Pack and temporary local npm tarballs used for embedded mode.
     """
 
+    if options.export_mode not in {"share", "freeze", "custom"}:
+        raise ExportError("invalid export mode")
     profile_dir = Path(profile).resolve()
     destination_path = Path(destination).resolve()
     if not profile_dir.is_dir():
@@ -788,16 +768,12 @@ def export_profile(
     dependencies = _profile_dependencies(profile_manifest)
     bundles = _profile_bundles(profile_manifest)
     plugin_options = dict(options.plugin_options)
-    extra_runtime_sources: dict[str, str] = {}
     if options.include_installation_bundles:
         installed_inventory = _installed_bundle_inventory(profile_dir)
         installed_names = {package_name for package_name, *_ in installed_inventory}
-        for package_name, _package_dir, location, _package_manifest in installed_inventory:
+        for package_name, _package_dir, _location, _package_manifest in installed_inventory:
             if package_name in plugin_options and package_name not in bundles:
                 bundles.append(package_name)
-                extra_runtime_sources[package_name] = (
-                    "profile-dependency" if location == "profile" else "installation-anchor"
-                )
     else:
         installed_names = set()
     plugin_names = list(bundles)
@@ -818,7 +794,7 @@ def export_profile(
     artifacts: dict[str, bytes] = {}
     for package_name in plugin_names:
         specifier = dependencies.get(package_name, "unknown")
-        selected = plugin_options.get(package_name, PluginExportOptions())
+        selected = plugin_options.get(package_name, PluginExportOptions(mode=EMBEDDED if options.export_mode == "freeze" else REFERENCE_ONLY))
         entry, package_artifacts = _plugin_lock_entry(
             profile_dir,
             package_name,
@@ -826,7 +802,6 @@ def export_profile(
             bundles.index(package_name) if package_name in bundles else None,
             selected,
             npm_command,
-            extra_runtime_sources.get(package_name),
         )
         plugins.append(entry)
         for artifact_name, content in package_artifacts.items():
@@ -843,10 +818,18 @@ def export_profile(
         "environment": copy.deepcopy(dict(options.environment)),
         "requiredSecrets": list(required_secrets),
     }
+    from .export_plan import build_plan
+    from .portability import collect
+    user_data, portable_items = collect(profile_dir, options.data_selection, set(plugin_names))
+    plan = build_plan(profile_dir, options=options, portable_items=portable_items)
+    multiple_patches = any(isinstance(plugin["bundle"]["patch"], list) for plugin in plugins)
+    manifest.update({"schemaVersion": 3 if multiple_patches else 2, "exportMode": options.export_mode,
+                     "dataInventory": plan["dataInventory"], "completeness": plan["completeness"]})
     data = PackData(
+        user_data=user_data,
         manifest=manifest,
         profile_files=profile_files,
-        plugins_lock={"schemaVersion": 1, "plugins": plugins},
+        plugins_lock={"schemaVersion": 2 if multiple_patches else 1, "plugins": plugins},
         plugin_artifacts=artifacts,
     )
     destination_path.parent.mkdir(parents=True, exist_ok=True)

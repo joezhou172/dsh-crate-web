@@ -1,4 +1,10 @@
 import { Context } from "@deepseek-ai/cordis";
+
+//#region src/windows-terminal.d.ts
+interface WindowsTerminalConfig {
+  windowsTerminalCompatibility?: boolean;
+}
+//#endregion
 //#region src/index.d.ts
 /** Minimal structural projection of the Cordis Loader entry tree used by DSH. */
 interface LoaderEntryOptions {
@@ -25,6 +31,6 @@ declare module '@deepseek-ai/cordis' {
 }
 /** Register the host bridge. The Core executable is intentionally external. */
 declare const inject: string[];
-declare function apply(ctx: Context): void;
+declare function apply(ctx: Context, config?: WindowsTerminalConfig): void;
 //#endregion
 export { apply, inject };

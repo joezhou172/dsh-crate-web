@@ -15,6 +15,51 @@ from .preflight import PreflightContext, inspect_pack, render_text
 from .verify import SubprocessVerifyAdapter, VerifyOptions, load_smoke_contracts, verify_profile
 
 
+def _pnpm_command_from_environment() -> tuple[str, ...] | None:
+    value = os.environ.get('DSH_PACK_PNPM_COMMAND')
+    if not value:
+        return None
+    try:
+        command = json.loads(value)
+    except ValueError:
+        command = None
+    if not isinstance(command, list) or not command or not all(isinstance(item, str) and item and '\x00' not in item for item in command):
+        raise PackImportError('DSH_PACK_PNPM_COMMAND must be a nonempty JSON argv array', stage='planning', code='PACKAGE_MANAGER_COMMAND_INVALID')
+    return tuple(command)
+
+
+def _host_bundles_from_environment():
+    source = os.environ.get('DSH_PACK_HOST_BUNDLES_FILE')
+    if not source:
+        return None
+    try:
+        value = json.loads(Path(source).read_text(encoding='utf-8'))
+        if value.get('schemaVersion') != 1 or not isinstance(value.get('bundles'), dict):
+            raise ValueError('invalid host bundle evidence')
+        return value['bundles']
+    except (OSError, ValueError, TypeError, AttributeError) as error:
+        raise PackImportError('cannot read explicit host Bundle evidence', stage='planning', code='HOST_BUNDLE_EVIDENCE_INVALID') from error
+
+
+def _patch_adapter_from_environment() -> tuple[str, ...] | None:
+    value = os.environ.get('DSH_PACK_PATCH_ADAPTER_COMMAND')
+    if not value:
+        return None
+    try:
+        command = json.loads(value)
+        if not isinstance(command, list) or not command or not all(isinstance(item, str) and item and '\x00' not in item for item in command):
+            raise ValueError('invalid adapter command')
+        return tuple(command)
+    except (ValueError, TypeError) as error:
+        raise PackImportError('DSH_PACK_PATCH_ADAPTER_COMMAND must be an explicit JSON argv array', stage='planning', code='PROFILE_PATCH_ADAPTER_COMMAND_INVALID') from error
+
+
+def _emit(value: dict, operation: str) -> None:
+    from .diagnostics import envelope_fields
+    payload = {**envelope_fields(operation=operation, status=str(value.get("status", "UNTESTED"))), **value}
+    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+
+
 def _plugin_inventory(values: list[str]) -> dict[str, str | None]:
     inventory: dict[str, str | None] = {}
     for value in values:
@@ -78,6 +123,9 @@ def _export_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParse
     parser.add_argument("--embed", action="append", default=[], metavar="PLUGIN", help="embed one plugin artifact")
     parser.add_argument("--reference-only", action="append", default=[], metavar="PLUGIN", help="keep one plugin reference-only")
     parser.add_argument("--include-installed-bundles", action="store_true", help="include direct installed Bundle inventory in the exported Profile composition")
+    parser.add_argument("--preset", choices=("share", "freeze", "custom"), default="custom")
+    parser.add_argument("--data-selection-json", help="JSON array of explicitly selected data paths, kinds and owners")
+    parser.add_argument("--plan-only", action="store_true", help="preview export contents without writing a Crate")
     parser.add_argument("--required-secret", action="append", default=[], metavar="NAME", help="record one required Secret name")
     parser.set_defaults(handler=_run_export)
 
@@ -137,7 +185,7 @@ def _run_inspect(args: argparse.Namespace) -> int:
         )
     result = inspect_pack(args.pack, context=context)
     if args.json:
-        print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+        _emit(result.as_dict(), args.command)
     else:
         print(render_text(result))
     return 1 if result.blockers else 0
@@ -170,6 +218,8 @@ def _export_payload(result: object) -> dict[str, object]:
         "requiredSecrets": data.manifest.get("requiredSecrets", []),
         "plugins": data.plugins_lock.get("plugins", []),
         "artifactPaths": sorted(f"plugins/{name}" for name in data.plugin_artifacts),
+        "dataInventory": data.manifest.get("dataInventory", []),
+        "completeness": data.manifest.get("completeness", {}),
     }
 
 
@@ -178,33 +228,37 @@ def _run_export(args: argparse.Namespace) -> int:
     if overlap:
         payload = {"status": "failed", "error": {"message": f"plugin selected for both --embed and --reference-only: {sorted(overlap)}"}}
         if args.json:
-            print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+            _emit(payload, args.command)
         else:
             print(f"EXPORT FAIL: {payload['error']['message']}")
         return 2
     plugin_options = {name: PluginExportOptions(mode=EMBEDDED) for name in args.embed}
     plugin_options.update({name: PluginExportOptions(mode=REFERENCE_ONLY) for name in args.reference_only})
     try:
-        result = export_profile(
-            args.profile,
-            args.output,
-            options=ExportOptions(
+        options = ExportOptions(
                 environment=_export_environment(args),
                 required_secrets=tuple(args.required_secret),
                 plugin_options=plugin_options,
                 include_installation_bundles=args.include_installed_bundles,
-            ),
-        )
+                export_mode=args.preset,
+                data_selection=tuple(json.loads(Path(args.data_selection_json).read_text(encoding="utf-8"))) if args.data_selection_json else (),
+            )
+        if args.plan_only:
+            from .export_plan import build_plan
+            payload = build_plan(Path(args.profile), options=options)
+            _emit(payload, args.command)
+            return 0
+        result = export_profile(args.profile, args.output, options=options)
     except (DshPackError, OSError, ValueError, json.JSONDecodeError) as error:
         payload = {"status": "failed", "error": {"message": str(error)}}
         if args.json:
-            print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+            _emit(payload, args.command)
         else:
             print(f"EXPORT FAIL: {error}")
         return 2
     payload = _export_payload(result)
     if args.json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        _emit(payload, args.command)
     else:
         print(f"EXPORT PASS: {result.path}")
     return 0
@@ -226,6 +280,9 @@ def _run_import(args: argparse.Namespace) -> int:
     try:
         sources = _reference_sources(args.reference_plugin)
         options = ImportOptions(
+            pnpm_command=_pnpm_command_from_environment(),
+            host_bundles=_host_bundles_from_environment(),
+            patch_adapter_command=_patch_adapter_from_environment(),
             current_environment=environment,
             available_secrets=available_secrets,
             reference_plugin_sources=sources,
@@ -238,7 +295,7 @@ def _run_import(args: argparse.Namespace) -> int:
             plan = create_import_plan(args.pack, args.dsh_home, options=options)
             payload = {"status": "plan", "readOnly": True, "plan": plan.as_dict()}
             if args.json:
-                print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+                _emit(payload, args.command)
             else:
                 print(f"Plan: {plan.profile_name}")
             return 0
@@ -246,12 +303,12 @@ def _run_import(args: argparse.Namespace) -> int:
     except (PackImportError, ValueError, OSError) as error:
         payload = {"status": "failed", "error": error.as_dict() if isinstance(error, PackImportError) else {"message": str(error)}}
         if args.json:
-            print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+            _emit(payload, args.command)
         else:
             print(f"Import failed: {payload['error'].get('message', str(error))}")
         return 1
     if args.json:
-        print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+        _emit(result.as_dict(), args.command)
     else:
         print(f"Status: {result.status}")
         print(f"Profile: {result.profile_path}")
@@ -279,13 +336,13 @@ def _run_delete_profile(args: argparse.Namespace) -> int:
     except PackImportError as error:
         payload = {"status": "failed", "error": error.as_dict()}
         if args.json:
-            print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+            _emit(payload, args.command)
         else:
             print(f"Delete failed: {error}")
         return 1
     payload = result.as_dict()
     if args.json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        _emit(payload, args.command)
     else:
         print(f"Deleted Profile: {result.profile_name}")
     return 0
@@ -332,7 +389,11 @@ def _run_verify(args: argparse.Namespace) -> int:
             config = json.loads(Path(args.runner_config).read_text(encoding="utf-8"))
             if not isinstance(config, dict):
                 raise ValueError("runner config JSON must contain an object")
-            adapter = SubprocessVerifyAdapter(config)
+            if config.get('kind') == 'desktop':
+                from .desktop_verify import DesktopVerifyAdapter
+                adapter = DesktopVerifyAdapter(config)
+            else:
+                adapter = SubprocessVerifyAdapter(config)
         result = verify_profile(
             VerifyOptions(
                 dsh_home=Path(args.dsh_home).resolve(),
@@ -347,12 +408,12 @@ def _run_verify(args: argparse.Namespace) -> int:
     except (OSError, ValueError, json.JSONDecodeError) as error:
         payload = {"status": "FAIL", "error": {"message": str(error)}}
         if args.json:
-            print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+            _emit(payload, args.command)
         else:
             print(f"Verify failed: {error}")
         return 1
     if args.json:
-        print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+        _emit(result.as_dict(), args.command)
     else:
         print(f"Status: {result.status}")
         for step in result.steps:
@@ -368,5 +429,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     _import_parser(subparsers)
     _delete_parser(subparsers)
     _verify_parser(subparsers)
+    from .troubleshooting import configure_parser
+    configure_parser(subparsers)
     args = parser.parse_args(argv)
     return args.handler(args)

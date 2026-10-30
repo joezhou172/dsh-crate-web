@@ -11,6 +11,7 @@ import re
 
 from collections.abc import Mapping
 from typing import Any
+from .identity import expected_install_version, unknown_source
 
 
 NETWORK_SOURCE_TYPES = frozenset({"registry", "git", "tarball", "alias"})
@@ -20,7 +21,7 @@ def network_source_details(plugin: Mapping[str, Any]) -> dict[str, str] | None:
     """Return the recorded network source, or ``None`` for local-only sources."""
 
     requested = plugin.get("requested")
-    if not isinstance(requested, Mapping):
+    if not isinstance(requested, Mapping) or unknown_source(plugin):
         return None
     source_type = requested.get("sourceType")
     specifier = requested.get("specifier")
@@ -56,14 +57,14 @@ def npm_install_specifier(plugin: Mapping[str, Any]) -> str | None:
     source_type = details["sourceType"]
     specifier = details["specifier"]
     if source_type in {"registry", "alias"}:
-        resolved = plugin.get("resolved")
-        exact_version = resolved.get("version") if isinstance(resolved, Mapping) else None
+        exact_version = expected_install_version(plugin)
         if (
             source_type == "registry"
             and isinstance(exact_version, str)
             and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.\-]+)?", exact_version)
         ):
-            # Install the exact version recorded at export time.  Using the
+            # Install the exact recorded installation target (legacy resolution
+            # or observed runtime when resolution is explicitly unknown). Using the
             # requested range alone lets npm resolve to a different (older)
             # version when the target Profile already declares the same range.
             return f"{name}@={exact_version}"

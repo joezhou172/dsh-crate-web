@@ -14,7 +14,7 @@ export const css = {
   inventory: 'dsh-crate-inventory', inventoryItem: 'dsh-crate-inventory-item', success: 'dsh-crate-success',
   modalBackdrop: 'dsh-crate-modal-backdrop', modal: 'dsh-crate-modal', modalActions: 'dsh-crate-modal-actions',
   group: 'dsh-crate-group', groupHead: 'dsh-crate-group-head', groupToggle: 'dsh-crate-group-toggle', groupBody: 'dsh-crate-group-body',
-  badge: 'dsh-crate-badge', conflict: 'dsh-crate-conflict', toneOk: 'dsh-crate-tone-ok', toneBad: 'dsh-crate-tone-bad', toneNeutral: 'dsh-crate-tone-neutral',
+  badge: 'dsh-crate-badge', conflict: 'dsh-crate-conflict',
 }
 
 export const STYLE = `
@@ -22,7 +22,7 @@ export const STYLE = `
 .dsh-crate-heading{margin:0;font-size:18px;font-weight:600}.dsh-crate-intro,.dsh-crate-muted{margin:0;font-size:13px;color:var(--dsw-alias-label-tertiary)}
 .dsh-crate-tabs{display:flex;gap:20px;border-bottom:1px solid var(--dsw-alias-border-l2);overflow:auto}.dsh-crate-tab{border:0;padding:7px 1px 9px;background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;cursor:pointer;white-space:nowrap}
 .dsh-crate-tab[data-active=true]{color:var(--dsw-alias-label-primary);border-bottom:2px solid var(--dsw-alias-label-primary)}.dsh-crate-form{display:flex;flex-direction:column;gap:10px}
-.dsh-crate-label{display:flex;flex-direction:column;gap:5px;font-size:13px}.dsh-crate-select,.dsh-crate-file{max-width:100%;padding:7px 8px;border:1px solid var(--dsw-alias-border-l2,#3a3a40);border-radius:6px;background-color:var(--dsw-alias-fill-secondary,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#f9fafb);color-scheme:dark}.dsh-crate-select option{background-color:#242428;color:#f9fafb}@media (prefers-color-scheme:light){.dsh-crate-select,.dsh-crate-file{background-color:var(--dsw-alias-fill-secondary,#fff);color:var(--dsw-alias-label-primary,#111827);color-scheme:light}.dsh-crate-select option{background-color:#fff;color:#111827}}
+.dsh-crate-label{display:flex;flex-direction:column;gap:5px;font-size:13px}.dsh-crate-select,.dsh-crate-file{max-width:100%;min-width:0;padding:7px 8px;border:1px solid var(--dsw-alias-border-l2,#3a3a40);border-radius:6px;background-color:var(--dsw-alias-bg-layer-1,Canvas);color:var(--dsw-alias-label-primary,CanvasText);color-scheme:inherit}.dsh-crate-select option{background-color:var(--dsw-alias-bg-layer-1,Canvas);color:var(--dsw-alias-label-primary,CanvasText)}.dsh-crate-inventory-item{overflow-wrap:anywhere}.dsh-crate-inventory-item>span{min-width:0}
 .dsh-crate-plugin{display:grid;grid-template-columns:minmax(0,1fr) 150px;gap:8px;align-items:center}.dsh-crate-button{align-self:flex-start;border:0;border-radius:6px;padding:8px 13px;background:var(--dsw-alias-state-business-primary);color:white;cursor:pointer}.dsh-crate-button:disabled{cursor:default;opacity:.5}
 .dsh-crate-report,.dsh-crate-preview,.dsh-crate-diagnostic{display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow-wrap:anywhere;font-size:12px}.dsh-crate-finding,.dsh-crate-step{padding:7px;border-radius:5px;background:var(--dsw-alias-fill-tertiary)}
 .dsh-crate-preview-row{display:grid;grid-template-columns:170px minmax(0,1fr);gap:8px}.dsh-crate-preview-row pre{margin:0;white-space:pre-wrap}.dsh-crate-diagnostic-grid{display:grid;grid-template-columns:150px minmax(0,1fr);gap:6px}.dsh-crate-diagnostic-grid dt{font-weight:600}.dsh-crate-diagnostic-grid dd{margin:0;white-space:pre-wrap}.dsh-crate-step{display:flex;gap:8px;align-items:flex-start}.dsh-crate-step-status{min-width:80px;font-weight:600}
@@ -32,38 +32,30 @@ export const STYLE = `
 .dsh-crate-group{display:flex;flex-direction:column;gap:6px}.dsh-crate-group-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 0}.dsh-crate-group-toggle{border:0;background:transparent;color:var(--dsw-alias-state-business-primary,#4f8cff);font:inherit;font-size:12px;cursor:pointer;padding:2px 4px}.dsh-crate-group-body{display:flex;flex-direction:column;gap:6px}
 .dsh-crate-badge{margin-left:6px;padding:1px 5px;border-radius:4px;background:var(--dsw-alias-fill-tertiary);color:var(--dsw-alias-label-tertiary);font-size:11px;border:1px solid var(--dsw-alias-border-l2)}.dsh-crate-conflict{color:var(--dsw-alias-label-negative)}
 .dsh-crate-modal-backdrop{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(0,0,0,.58)}.dsh-crate-modal{display:flex;flex-direction:column;gap:12px;width:min(420px,calc(100vw - 48px));padding:18px;border:1px solid var(--dsw-alias-border-l2,#3a3a40);border-radius:10px;background:var(--dsw-alias-fill-primary,#1d1d20);color:var(--dsw-alias-label-primary,#f9fafb);box-shadow:0 18px 50px rgba(0,0,0,.45)}.dsh-crate-modal h3{margin:0;font-size:16px}.dsh-crate-modal p{margin:0;font-size:13px;color:var(--dsw-alias-label-tertiary,#b6b6bd)}.dsh-crate-modal-actions{display:flex;justify-content:flex-end;gap:8px}.dsh-crate-modal-actions button:last-child{background:var(--dsw-alias-state-business-primary,#4b7bec);color:#fff}
-.dsh-crate-tone-ok{color:var(--dsw-alias-label-positive)}.dsh-crate-tone-bad{color:var(--dsw-alias-label-negative)}.dsh-crate-tone-neutral{color:var(--dsw-alias-label-tertiary)}
+@media(max-width:600px){
+  [data-dsh-module=settings]:has(.dsh-crate-section){flex-direction:column;width:calc(100vw - 24px);max-width:calc(100vw - 24px)}
+  [data-dsh-module=settings]:has(.dsh-crate-section)>nav{width:100%;gap:8px;padding:12px 12px 0}
+  [data-dsh-module=settings]:has(.dsh-crate-section)>nav>div:last-child{flex-direction:row;overflow-x:auto}
+  [data-dsh-module=settings]:has(.dsh-crate-section)>nav button{flex-shrink:0}
+  [data-dsh-module=settings]:has(.dsh-crate-section)>div{min-height:0}
+  [data-dsh-module=settings]:has(.dsh-crate-section)>div>div:last-child{padding:0 12px 12px}
+  .dsh-crate-section{min-width:0;max-width:100%}
+  .dsh-crate-inventory-item{flex-wrap:wrap;justify-content:flex-start}
+  .dsh-crate-inventory-item>span:first-of-type{flex:1 1 100%}
+  .dsh-crate-preview-row,.dsh-crate-diagnostic-grid{grid-template-columns:minmax(0,1fr)}
+  .dsh-crate-section pre{max-width:100%;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+}
+
 `
 
 type Tab = 'export' | 'import' | 'inspect' | 'verify' | 'history'
 type ImportMode = 'new' | 'overwrite'
-type Json = Record<string, unknown>
+export type Json = Record<string, unknown>
 interface Profile { name: string; installedBundles: Json[] }
 interface HistoryItem { time?: string; action?: string; status?: string; profile?: string; pack?: string; message?: string }
 type PageProps = PropsRuntime<'settings.section'> & PropsLocale<'dsh.crate'>
 
 export function isObject(value: unknown): value is Json { return value !== null && typeof value === 'object' && !Array.isArray(value) }
-
-function formatTime(value: unknown): string {
-  if (typeof value !== 'string' || !value) return ''
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
-}
-
-function toneOf(status: unknown): string {
-  const text = String(status ?? '').toUpperCase()
-  if (text.includes('FAIL') || text.includes('ERROR') || text === 'BLOCKER' || text === 'UNKNOWN') return css.toneBad
-  if (text.includes('PASS') || text === 'READY' || text === 'PREPARED' || text === 'OK') return css.toneOk
-  return css.toneNeutral
-}
-
-const FIELD_LABELS: Record<string, DshCrateLocaleKey> = {
-  code: 'diagCode', stage: 'diagStage', item: 'diagItem', expected: 'diagExpected',
-  observed: 'diagObserved', evidence: 'diagEvidence', impact: 'diagImpact',
-  originalProfileStatus: 'diagOriginalProfile', failedProfileStatus: 'diagFailedProfile',
-  temporaryProfileStatus: 'diagTemporaryProfile', canContinue: 'diagCanContinue',
-  suggestedNextStep: 'diagSuggestedNext',
-}
 
 function resultOf(value: Json): Json {
   return isObject(value.result) ? value.result : value
@@ -89,7 +81,10 @@ function display(value: unknown): string {
 
 function pluginLabel(plugin: Json): string {
   const resolved = isObject(plugin.resolved) ? plugin.resolved : {}
-  return `${String(plugin.name ?? 'unknown')}@${String(resolved.version ?? 'unknown')}`
+  const runtime = isObject(plugin.runtime) ? plugin.runtime : {}
+  const version = typeof resolved.version === 'string' && resolved.version !== 'unknown'
+    ? resolved.version : runtime.version
+  return `${String(plugin.name ?? 'unknown')}@${String(version ?? 'unknown')}`
 }
 
 function upsertProfileRow(list: Profile[], row: Json): Profile[] {
@@ -195,7 +190,7 @@ function Diagnostic({ value, t }: { value: Json; t: (key: DshCrateLocaleKey) => 
     <strong>{t('diagnostic')}</strong>
     <dl className={css.diagnosticGrid}>
       {fields.filter(field => diagnostic[field] !== undefined).map(field => <div key={field}>
-        <dt>{t(FIELD_LABELS[field] ?? (field as DshCrateLocaleKey))}</dt><dd>{display(diagnostic[field])}</dd>
+        <dt>{field}</dt><dd>{display(diagnostic[field])}</dd>
       </div>)}
     </dl>
     <div><button className={css.button} type="button" onClick={() => void copy()}>{copied ? t('diagnosticCopied') : t('copyDiagnostic')}</button></div>
@@ -208,7 +203,7 @@ function Report({ value, t }: { value: Json | undefined; t: (key: DshCrateLocale
   const result = resultOf(value)
   const findings = objects(result.findings)
   return <div className={css.report} data-status={String(result.status ?? 'UNKNOWN')}>
-    <div><strong>{t('coreStatus')}</strong> · <span className={toneOf(result.status)}>{String(result.status ?? 'UNKNOWN')}</span></div>
+    <div><strong>{t('coreStatus')}</strong> · {String(result.status ?? 'UNKNOWN')}</div>
     {findings.length > 0 ? <>
       <strong>{t('findings')}</strong>
       {findings.map((finding, index) => <div className={css.finding} key={`${String(finding.code)}-${index}`}>
@@ -222,12 +217,14 @@ function Report({ value, t }: { value: Json | undefined; t: (key: DshCrateLocale
 
 function ImportPreview({ value, t, targetProfile, overwrite }: { value: Json; t: (key: DshCrateLocaleKey) => string; targetProfile?: string; overwrite: boolean }) {
   const result = resultOf(value)
+  if (typeof result.canContinue !== 'boolean') return null
   const pack = isObject(result.pack) ? result.pack : {}
   const profile = isObject(pack.profile) ? pack.profile : {}
   const requiredPlugins = objects(result.requiredPlugins)
   const optionalPlugins = objects(result.optionalPlugins)
   const warningCount = typeof result.warningCount === 'number' ? result.warningCount : 0
   const environment = isObject(result.environment) ? result.environment : {}
+  const secrets = isObject(result.secrets) ? result.secrets : {}
   const target = targetProfile?.trim() || String(result.targetProfile ?? profile.name ?? 'UNKNOWN')
   const safety = overwrite ? t('overwritePreview') : t('willNotOverwrite')
   return <div className={css.preview}>
@@ -237,6 +234,8 @@ function ImportPreview({ value, t, targetProfile, overwrite }: { value: Json; t:
     <div className={css.previewRow} data-field="requiredPlugins"><strong>{t('requiredPlugins')}</strong><span>{requiredPlugins.map(pluginLabel).join(', ') || t('none')}</span></div>
     <div className={css.previewRow} data-field="optionalPlugins"><strong>{t('optionalPlugins')}</strong><span>{optionalPlugins.map(pluginLabel).join(', ') || t('none')}</span></div>
     <div className={css.previewRow} data-field="environment"><strong>{t('environment')}</strong><pre>{display(environment)}</pre></div>
+    <div className={css.previewRow} data-field="requiredSecrets"><strong>{t('requiredSecrets')}</strong><span>{Array.isArray(secrets.required) ? secrets.required.join(', ') || t('none') : t('none')}</span></div>
+    <div className={css.previewRow} data-field="missingSecrets"><strong>{t('missingSecrets')}</strong><span>{Array.isArray(secrets.missing) ? secrets.missing.join(', ') || t('none') : t('none')}</span></div>
     <div className={css.previewRow} data-field="coreDecision"><strong>{t('coreDecision')}</strong><span>{display(result.canContinue)}</span></div>
     <div className={css.previewRow} data-field="safety"><strong>{t('safety')}</strong><span>{safety}</span></div>
   </div>
@@ -264,9 +263,8 @@ function VerifyReport({ value, t }: { value: Json | undefined; t: (key: DshCrate
   const steps = objects(result.steps)
   return <div className={css.report} data-status={String(result.status ?? 'UNKNOWN')}>
     <div><strong>{t('coreStatus')}</strong> · {String(result.status ?? 'UNKNOWN')}</div>
-    {String(result.status ?? '') === 'UNTESTED' ? <p className={css.muted}>{t('verifyUntestedNote')}</p> : null}
     {steps.map((step, index) => <div className={css.step} key={`${String(step.name)}-${index}`}>
-      <span className={`${css.stepStatus} ${toneOf(step.status)}`}>{String(step.status ?? 'UNKNOWN')}</span>
+      <span className={css.stepStatus}>{String(step.status ?? 'UNKNOWN')}</span>
       <span><strong>{String(step.name ?? 'unknown')}</strong> — {String(step.message ?? '')}<br /><small>{display(step.evidence ?? {})}</small></span>
     </div>)}
     <Diagnostic value={value} t={t} />
@@ -279,6 +277,14 @@ export function DshCratePage({ t }: PageProps) {
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [profile, setProfile] = useState('')
   const [modes, setModes] = useState<Record<string, string>>({})
+  const [preset, setPreset] = useState('custom')
+  const [secretNames, setSecretNames] = useState('')
+  const [dataSelection, setDataSelection] = useState<Json[]>([])
+  const [dataOwners, setDataOwners] = useState<Record<string, string>>({})
+  const [dataKinds, setDataKinds] = useState<Record<string, string>>({})
+  const [exportPlan, setExportPlan] = useState<Json>()
+  const [reviewedSelection, setReviewedSelection] = useState('')
+  const [downloadSelection, setDownloadSelection] = useState('')
   const [file, setFile] = useState<File>()
   const [report, setReport] = useState<Json>()
   const [history, setHistory] = useState<HistoryItem[]>([])
@@ -307,6 +313,30 @@ export function DshCratePage({ t }: PageProps) {
   const exportBundles = installedBundles.filter(bundle => bundle.active === true)
   const conflictBundles = installedBundles.filter(bundle => bundle.conflict === true)
   const exportNames = exportBundles.map(bundle => String(bundle.name ?? '')).filter(Boolean)
+  const requiredSecrets = [...new Set(secretNames.split(/[\s,]+/).filter(Boolean))]
+  const invalidSecretNames = requiredSecrets.some(name => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
+  const exportBody = {
+    profileName: profile, includeInstalledBundles: true, preset, dataSelection, requiredSecrets,
+    embed: exportNames.filter(name => (modes[name] ?? 'embedded') === 'embedded'),
+    referenceOnly: exportNames.filter(name => (modes[name] ?? 'embedded') === 'reference-only'),
+  }
+  const exportSignature = JSON.stringify(exportBody)
+  const previewExport = async () => {
+    setBusy(true); setError('')
+    try {
+      const value = await request('export-plan', exportBody)
+      if (value.status === 'failed') throw new Error(failMessage(value) || t('error'))
+      setExportPlan(resultOf(value))
+      setReviewedSelection(exportSignature)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught))
+      setReviewedSelection('')
+    } finally { setBusy(false) }
+  }
+  useEffect(() => {
+    setDataSelection([]); setDataOwners({}); setDataKinds({}); setSecretNames('')
+    setExportPlan(undefined); setReviewedSelection('')
+  }, [profile])
   const canImport = isObject(report?.result) && report.result.canContinue === true
   const currentRuntimeProfile = typeof runtime?.currentProfile === 'string' ? runtime.currentProfile : ''
 
@@ -366,6 +396,7 @@ export function DshCratePage({ t }: PageProps) {
 
   const run = async (action: string, body: Json) => {
     setBusy(true); setError('')
+    if (action === 'export') setDownloadSelection('')
     try {
       const value = await request(action, body)
       setReport(value)
@@ -374,13 +405,12 @@ export function DshCratePage({ t }: PageProps) {
       if (value.status === 'failed' || result.status === 'failed' || result.status === 'FAIL') {
         showToast(`${t('error')}: ${failMessage(value) || t('error')}`)
       } else if (action === 'export' && typeof value.downloadName === 'string') {
+        setDownloadSelection(JSON.stringify(body))
         showToast(`${t('exportSuccess')} ${profileLabel}`.trim())
       } else if (action === 'inspect') {
         showToast(t('inspectSuccess'))
-      } else if (action === 'verify') {
-        if (value.success === true) showToast(`${t('verifySuccess')} ${profileLabel}`.trim())
-        else if (result.status === 'FAIL') showToast(`${t('error')}: ${failMessage(value) || t('verifyFailed')}`)
-        else showToast(`${t('verifyFinished')} ${profileLabel} · ${String(result.status ?? '')}`.trim())
+      } else if (action === 'verify' && value.success !== true) {
+        showToast(`${t('verifyFinished')} ${profileLabel} · ${String(result.status ?? '')}`.trim())
       }
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught)
@@ -489,7 +519,7 @@ export function DshCratePage({ t }: PageProps) {
     }
     const target = importTarget.trim() || profiles[0]?.name || ''
     if (!target) { setError(t('noProfiles')); return }
-    if (!window.confirm(`${t('overwriteWarning')}\n\n${target}`)) { showToast(t('overwriteCanceled')); setError(''); return }
+    if (!window.confirm(`${t('overwriteWarning')}\n\n${target}`)) { setError(t('overwriteCanceled')); return }
     setBusy(true); setError('')
     try {
       const value = await request('import', { packBase64: await toBase64(file), targetProfile: target, overwrite: true, confirmOverwrite: true })
@@ -547,7 +577,8 @@ export function DshCratePage({ t }: PageProps) {
     <span className={css.muted}>{t('createProfileHint')}</span>
     <button className={css.button} type="button" disabled={busy || !createTarget.trim()} onClick={() => void createSelectedProfile()}>{busy ? t('createPending') : t('createProfile')}</button>
     <label className={css.label}>{t('switchProfile')}<select className={css.select} value={switchTarget && switchTarget !== currentRuntimeProfile ? switchTarget : profiles.find(item => item.name !== currentRuntimeProfile)?.name || ''} onChange={event => setSwitchTarget(event.target.value)}>{profiles.filter(item => item.name !== currentRuntimeProfile).map(item => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
-    <button className={css.button} type="button" disabled={busy || !switchTarget} onClick={() => void switchSelectedProfile()}>{busy ? t('switchPending') : t('switchProfile')}</button>
+    <button className={css.button} type="button" disabled={busy || !switchTarget || runtime?.restartConfigured !== true} onClick={() => void switchSelectedProfile()}>{busy ? t('switchPending') : t('switchProfile')}</button>
+    {runtime?.restartConfigured === false ? <span className={css.muted}>{t('switchUnavailable')}</span> : null}
     <label className={css.label}>{t('deleteProfile')}<select className={css.select} value={deleteTarget || profiles[0]?.name || ''} onChange={event => setDeleteTarget(event.target.value)}>{profiles.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
     <span className={css.muted}>{t('deleteProfileWarning')}</span>
     <button className={css.button} type="button" disabled={busy || !deleteTarget} onClick={() => void deleteSelectedProfile()}>{t('confirmDelete')}</button>
@@ -588,7 +619,7 @@ export function DshCratePage({ t }: PageProps) {
           const row = (bundle: Json) => {
             const name = String(bundle.name ?? '')
             const conflict = bundle.conflict === true
-            return <div className={css.inventoryItem} key={`${name}-${String(bundle.version)}`}><span>{installedBundleLabel(bundle, t)}{conflict ? <span className={css.conflict}> · {t('conflictWarning')}</span> : null}</span><span>{String(bundle.patch ?? '')}</span><select aria-label={`${name} ${t('artifactMode')}`} className={css.select} disabled={conflict} value={modes[name] ?? 'embedded'} onChange={event => setModes(current => ({ ...current, [name]: event.target.value }))}><option value="embedded">{t('embedded')}</option><option value="reference-only">{t('referenceOnly')}</option></select></div>
+            return <div className={css.inventoryItem} key={`${name}-${String(bundle.version)}`}><span>{installedBundleLabel(bundle, t)}{conflict ? <span className={css.conflict}> · {t('conflictWarning')}</span> : null}</span><span>{String(bundle.patch ?? '')}</span><select aria-label={`${name} ${t('artifactMode')}`} className={css.select} disabled={conflict} value={modes[name] ?? 'embedded'} onChange={event => { setPreset('custom'); setModes(current => ({ ...current, [name]: event.target.value })) }}><option value="embedded">{t('embedded')}</option><option value="reference-only">{t('referenceOnly')}</option></select></div>
           }
           return <>
             <PluginGroup label={t('userPlugins')} count={groups.user.length} defaultOpen t={t}>{groups.user.map(row)}</PluginGroup>
@@ -596,8 +627,53 @@ export function DshCratePage({ t }: PageProps) {
           </>
         })()}</div>
         {conflictBundles.length > 0 ? <div className={css.inventory} data-field="conflictBundles"><strong>{t('conflictBundles')}</strong>{conflictBundles.map(bundle => <div className={css.inventoryItem} key={`conflict-${String(bundle.name)}`}><span>{installedBundleLabel(bundle, t)}</span><span className={css.conflict}>{t('conflictWarning')}</span></div>)}</div> : null}
-        <button className={css.button} type="button" disabled={busy || !profile} onClick={() => void run('export', { profileName: profile, includeInstalledBundles: true, embed: exportNames.filter(name => (modes[name] ?? 'embedded') === 'embedded'), referenceOnly: exportNames.filter(name => (modes[name] ?? 'embedded') === 'reference-only') })}>{busy ? t('exporting') : t('exportButton')}</button>
-        {isObject(report) && typeof report.downloadName === 'string' ? <a href={`/dsh-crate/download?name=${encodeURIComponent(report.downloadName)}`}>{t('download')}</a> : null}
+        <label>{t('exportPreset')} <select className={css.select} value={preset} disabled={busy} onChange={event => {
+          const value = event.target.value
+          setPreset(value)
+          if (value !== 'custom') setModes(Object.fromEntries(exportNames.map(name => [name, value === 'freeze' ? 'embedded' : 'reference-only'])))
+        }}><option value="share">Share</option><option value="freeze">Freeze</option><option value="custom">Custom</option></select></label>
+        <label className={css.label}>{t('requiredSecrets')}
+          <input className={css.file} value={secretNames} disabled={busy} autoComplete="off" spellCheck={false} aria-describedby="crate-secret-hint" aria-invalid={invalidSecretNames} onChange={event => setSecretNames(event.target.value)} />
+        </label>
+        <p className={css.muted} id="crate-secret-hint">{t('secretNamesHint')}</p>
+        {invalidSecretNames ? <p className={css.error} role="alert">{t('invalidSecretNames')}</p> : null}
+        <button className={css.button} type="button" disabled={busy || !profile || invalidSecretNames} onClick={() => void previewExport()}>{busy ? t('working') : t('previewExport')}</button>
+        {exportPlan ? <div className={css.inventory} data-field="exportPreview">
+          <strong>{t('requiredSecrets')}</strong><span data-field="reviewedSecrets">{Array.isArray(exportPlan.requiredSecrets) ? exportPlan.requiredSecrets.join(', ') || t('none') : t('none')}</span>
+          <strong>{t('portableData')}</strong><p>{t('privacyReview')}</p>
+          {objects(exportPlan.dataInventory).map((item, index) => {
+            const path = typeof item.path === 'string' ? item.path : ''
+            const conversation = item.kind === 'conversation'
+            const chosen = dataSelection.some(row => row.path === path)
+            const owner = conversation ? '@deepseek-ai/dsh-session-persistence-jsonl' : dataOwners[path] || ''
+            const selectable = item.selectable === true || item.classification === 'portable'
+            return <div className={css.inventoryItem} key={path || index}>
+              {selectable ? <input type="checkbox" aria-label={path} disabled={busy || !owner} checked={chosen} onChange={event => {
+                setDataSelection(current => event.target.checked
+                  ? [...current.filter(row => row.path !== path), { path, owner, kind: conversation ? 'conversation' : dataKinds[path] || 'plugin-data' }]
+                  : current.filter(row => row.path !== path))
+              }} /> : null}
+              <span>{path || String(item.name ?? '')} · {String(item.classification ?? '')}</span>
+              {selectable && !conversation ? <>
+                <select className={css.select} aria-label={path + ' ' + t('dataOwner')} disabled={busy || chosen} value={owner} onChange={event => setDataOwners(current => ({ ...current, [path]: event.target.value }))}>
+                  <option value="">{t('chooseOwner')}</option>{objects(exportPlan.plugins).map(plugin => <option key={String(plugin.name)} value={String(plugin.name)}>{String(plugin.name)}</option>)}
+                </select>
+                <select className={css.select} aria-label={path + ' ' + t('dataKind')} disabled={busy || chosen} value={dataKinds[path] || 'plugin-data'} onChange={event => setDataKinds(current => ({ ...current, [path]: event.target.value }))}>
+                  <option value="plugin-data">Plugin data</option><option value="plugin-config">Plugin config</option><option value="plugin-workflow">Plugin workflow</option>
+                </select>
+              </> : null}
+            </div>
+          })}
+          {isObject(exportPlan.completeness) ? <>
+            <strong>{t('completeness')}</strong>
+            <p>{t('embedded')}: {Array.isArray(exportPlan.completeness.embedded) ? exportPlan.completeness.embedded.length : 0}
+              {' · '}{t('referenceOnly')}: {Array.isArray(exportPlan.completeness.referenceOnly) ? exportPlan.completeness.referenceOnly.length : 0}
+              {' · '}{t('offlineRestore')}{': '}{String(exportPlan.completeness.offlineRestorable ?? 'UNPROVEN')}</p>
+            <details><summary>{t('rawJson')}</summary><pre>{JSON.stringify(exportPlan.completeness, null, 2)}</pre></details>
+          </> : null}
+        </div> : null}
+        <button className={css.button} type="button" disabled={busy || !profile || invalidSecretNames || reviewedSelection !== exportSignature} onClick={() => void run('export', exportBody)}>{busy ? t('exporting') : t('exportButton')}</button>
+        {!busy && downloadSelection === exportSignature && isObject(report) && typeof report.downloadName === 'string' ? <a href={`/dsh-crate/download?name=${encodeURIComponent(report.downloadName)}`}>{t('download')}</a> : null}
         <ExportPlugins value={report} t={t} />
         <Report value={report} t={t} />
       </>}
@@ -616,7 +692,7 @@ export function DshCratePage({ t }: PageProps) {
     </div> : null}
     {tab === 'inspect' ? <div className={css.form}>{input}<Report value={report} t={t} /><button className={css.button} type="button" disabled={busy || !file} onClick={async () => { if (file) await run('inspect', { packBase64: await toBase64(file) }) }}>{busy ? t('working') : t('inspectButton')}</button></div> : null}
     {tab === 'verify' ? <div className={css.form}>{profiles.length === 0 ? <p className={css.muted}>{t('noProfiles')}</p> : <>{profileSelect}<button className={css.button} type="button" disabled={busy || !profile} onClick={() => void run('verify', { profileName: profile, mode: 'web' })}>{busy ? t('working') : t('verifyButton')}</button><VerifyReport value={report} t={t} /></>}</div> : null}
-    {tab === 'history' ? <ul className={css.history}>{history.length === 0 ? <li className={css.muted}>{t('noHistory')}</li> : history.map((item, index) => <li className={css.historyItem} key={`${item.time}-${index}`}><span>{formatTime(item.time)} · {item.action} · {item.profile ?? item.pack ?? ''}</span><strong className={toneOf(item.status)}>{item.status}</strong></li>)}</ul> : null}
+    {tab === 'history' ? <ul className={css.history}>{history.length === 0 ? <li className={css.muted}>{t('noHistory')}</li> : history.map((item, index) => <li className={css.historyItem} key={`${item.time}-${index}`}><span>{item.time} · {item.action} · {item.profile ?? item.pack ?? ''}</span><strong>{item.status}</strong></li>)}</ul> : null}
     {newProfileDialogOpen ? <div className={css.modalBackdrop} role="presentation">
       <div className={css.modal} role="dialog" aria-modal="true" aria-labelledby="dsh-crate-new-profile-title">
         <h3 id="dsh-crate-new-profile-title">{t('newProfileName')}</h3>
@@ -625,7 +701,7 @@ export function DshCratePage({ t }: PageProps) {
         {newProfileDialogError ? <p className={css.error} role="alert">{newProfileDialogError}</p> : null}
         <div className={css.modalActions}>
           <button className={css.button} type="button" onClick={() => setNewProfileDialogOpen(false)}>{t('cancel')}</button>
-          <button className={css.button} type="button" onClick={() => void confirmNewProfileImport()}>{t('confirmImportAction')}</button>
+          <button className={css.button} type="button" onClick={() => void confirmNewProfileImport()}>{t('importButton')}</button>
         </div>
       </div>
     </div> : null}

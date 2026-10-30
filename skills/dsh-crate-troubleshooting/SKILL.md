@@ -1,10 +1,15 @@
+---
+name: dsh-crate-troubleshooting
+description: Diagnose DSH Crate Import, Export and Verify failures from complete diagnostic reports, with version checks and minimal scoped next steps.
+---
+
 # DSH Crate Troubleshooting Skill
 
-Version-aware troubleshooting for DSH Crate diagnostics.
+Version-aware troubleshooting for DSH Crate diagnostics. Run dsh-crate diagnose report.json --json for a read-only classification; it preserves the complete input report and never executes commands from it.
 
 This Skill ships with the same version as the DSH Crate release it supports.
 The version compatibility contract lives in `compatibility.json`; the code
-registry in `core/dsh_pack/diagnostics.py` is the single source of truth for
+registry in `src/dsh_pack/diagnostics.py` is the single source of truth for
 diagnostic codes and stages (rendered into `reference/diagnostics.generated.md`
 and `reference/stages.generated.md` by `scripts/generate-skill-reference.py`).
 
@@ -23,7 +28,7 @@ Read the diagnostic envelope:
 ```json
 {
   "producer": "dsh-crate",
-  "crateVersion": "0.1.1",
+  "crateVersion": "0.1.0",
   "diagnosticSchemaVersion": 1,
   "operation": "import",
   "operationId": "...",
@@ -151,7 +156,7 @@ Write scope
 
 Verification
 ------------
-PASS / FAIL / UNTESTED / PENDING
+PASS / FAIL / UNTESTED / DEGRADED
 <evidence>
 ```
 

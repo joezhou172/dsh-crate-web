@@ -1,7 +1,5 @@
 """Typed errors for the Phase 1 Pack reader and writer."""
 
-from .diagnostics import decorate_issue
-
 
 class DshPackError(Exception):
     """Base class for expected DSH Pack failures."""
@@ -93,7 +91,9 @@ class PackImportError(DshPackError):
             details.get("temporaryProfileStatus", "cleaned"),
         )
         temporary_profile_status = details.get("temporaryProfileStatus", failed_profile_status)
-        result = {
+        from .diagnostics import envelope_fields
+        return {
+            **envelope_fields(operation="import", status="FAIL", operation_id=details.get("operationId")),
             "code": self.code,
             "stage": self.stage,
             "item": item,
@@ -119,12 +119,6 @@ class PackImportError(DshPackError):
             "message": str(self),
             "details": details,
         }
-        return decorate_issue(
-            result,
-            operation="import",
-            status="FAIL",
-            operation_id=details.get("operationId"),
-        )
 
 
 def _default_checks(stage: str, code: str) -> list[str]:

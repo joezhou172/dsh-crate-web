@@ -27,3 +27,8 @@ work/
 outputs/
 work_setup_homes.py
 _patch*.py
+
+# 本地测试与发布预演证据
+work/
+release/
+*.tgz

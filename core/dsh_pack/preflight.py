@@ -10,9 +10,9 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Mapping
 
-from .diagnostics import decorate_issue
 from .errors import DshPackError, IntegrityError, SchemaValidationError, _default_checks
 from .network import network_source_details
+from .identity import expected_install_version, unknown_source
 from .pack import _read_entries, sha256_bytes
 from .validation import validate_manifest, validate_plugins_lock
 
@@ -48,7 +48,7 @@ _EXPECTED_BY_CODE = {
     "HASH_MISMATCH": "declared SHA-256 matches artifact bytes",
     "INTEGRITY_FILE_MISSING": "all declared Pack files are present",
     "INTEGRITY_FILE_SET_MISMATCH": "Pack files exactly match the integrity set",
-    "VERSION_MISSING": "each plugin has resolved.version",
+    "VERSION_MISSING": "each plugin has a known resolution or an explicit unknown resolution with known runtime identity",
     "PACKAGE_IDENTITY_DRIFT": "artifact package identity matches lock identity",
     "REQUIRED_ARTIFACT_MISSING": "required embedded artifact is present",
     "OPTIONAL_ARTIFACT_MISSING": "optional embedded artifact is present",
@@ -71,7 +71,7 @@ _NEXT_STEP_BY_CODE = {
     "HASH_MISMATCH": "Restore the original artifact or regenerate the Pack.",
     "INTEGRITY_FILE_MISSING": "Restore the missing Pack member and regenerate its integrity table.",
     "INTEGRITY_FILE_SET_MISMATCH": "Regenerate the Pack so its integrity file set matches its contents.",
-    "VERSION_MISSING": "Regenerate plugins.lock.json with a resolved plugin version.",
+    "VERSION_MISSING": "Re-export runtime identity, or provide recorded resolution evidence without guessing it.",
     "PACKAGE_IDENTITY_DRIFT": "Restore the artifact matching plugins.lock.json or re-export the Profile.",
     "REQUIRED_ARTIFACT_MISSING": "Restore the required embedded artifact before continuing.",
     "OPTIONAL_ARTIFACT_MISSING": "Restore the optional artifact or intentionally export the plugin reference-only.",
@@ -109,7 +109,9 @@ class Finding:
             raise ValueError(f"unsupported preflight severity: {self.severity}")
 
     def as_dict(self) -> dict[str, Any]:
-        result = {
+        from .diagnostics import envelope_fields
+        return {
+            **envelope_fields(operation="inspect", status="FAIL" if self.severity == "BLOCKER" else "UNTESTED"),
             "severity": self.severity,
             "code": self.code,
             "message": self.message,
@@ -124,7 +126,6 @@ class Finding:
             "suggestedChecks": _default_checks(self.stage, self.code),
             "details": self.details,
         }
-        return decorate_issue(result, operation="inspect", status=self.severity)
 
 
 @dataclass(frozen=True)
@@ -140,6 +141,7 @@ class PreflightContext:
     available_secrets: set[str] | None = None
     available_plugins: Mapping[str, str | None] | None = None
     allow_network_reference_install: bool = False
+    verified_local_plugins: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -386,7 +388,9 @@ def inspect_pack(
 
     try:
         validate_manifest(manifest, require_integrity=True)
-    except SchemaValidationError as error:
+        from .portability import validate_inventory
+        validate_inventory(manifest, {name[len("user-data/"):]: content for name, content in entries.items() if name.startswith("user-data/")}, lock)
+    except DshPackError as error:
         findings.append(_finding("BLOCKER", "SCHEMA_ERROR", str(error)))
 
     raw_plugins = lock.get("plugins", [])
@@ -402,15 +406,14 @@ def inspect_pack(
             if name in plugin_names:
                 findings.append(_finding("BLOCKER", "SCHEMA_ERROR", f"duplicate plugin name: {name}"))
             plugin_names.add(name)
-        resolved = raw_plugin.get("resolved")
-        version = resolved.get("version") if isinstance(resolved, Mapping) else None
+        version = expected_install_version(raw_plugin)
         if not isinstance(version, str) or not version.strip():
             missing_version_indexes.add(index)
             findings.append(
                 _finding(
                     "BLOCKER",
                     "VERSION_MISSING",
-                    f"plugin at plugins.lock.plugins[{index}] is missing resolved.version",
+                    f"plugin at plugins.lock.plugins[{index}] has no usable installation version identity",
                     index=index,
                     plugin=name,
                 )
@@ -468,7 +471,9 @@ def inspect_pack(
 
     try:
         validate_plugins_lock(lock, artifact_paths=artifact_entries)
-    except SchemaValidationError as error:
+        from .validation import validate_format_pair
+        validate_format_pair(manifest, lock)
+    except DshPackError as error:
         message = str(error)
         if "resolved.version" not in message and "resolved is missing fields" not in message:
             if "artifact.path is missing from plugins/" not in message:
@@ -596,9 +601,9 @@ def inspect_pack(
             if not _version_matches(required, current):
                 findings.append(
                     _finding(
-                        "WARNING",
+                        "BLOCKER",
                         "ENVIRONMENT_VERSION_MISMATCH",
-                        f"Pack was exported with {label} {required}; current {label} is {current} (runtime compatibility may differ)",
+                        f"Pack requires {label} {required}; current is {current}",
                         stage="environment",
                         item=section,
                         expected=required,
@@ -638,17 +643,35 @@ def inspect_pack(
     for name in missing_secrets:
         findings.append(_finding("WARNING", "SECRET_MISSING", f"required Secret is missing: {name}", secret=name))
 
+    for plugin in plugin_summaries:
+        artifact = plugin.get("artifact")
+        if not isinstance(artifact, Mapping) or artifact.get("mode") != "reference-only" or not unknown_source(plugin):
+            continue
+        expected_version = expected_install_version(plugin)
+        local_version = context.verified_local_plugins.get(plugin["name"])
+        if expected_version is None or local_version != expected_version:
+            findings.append(_finding(
+                "BLOCKER" if plugin.get("required") is True else "WARNING", "SOURCE_UNKNOWN",
+                f"reference-only plugin has no recorded installation source: {plugin['name']}",
+                stage="identity", plugin=plugin["name"], expected=expected_version,
+                observed=local_version, evidence={"requested": plugin.get("requested"),
+                                                "resolved": plugin.get("resolved"), "runtime": plugin.get("runtime")},
+                suggested_next_step="Provide an explicit local package source with matching name/version, or embed its verified artifact.",
+            ))
+
     if context.available_plugins is not None:
         available_plugins = dict(context.available_plugins)
         for plugin in plugin_summaries:
             artifact = plugin.get("artifact")
             if not isinstance(artifact, Mapping) or artifact.get("mode") != "reference-only":
                 continue
+            if unknown_source(plugin):
+                continue  # Checked separately using verified local-source evidence.
             name = plugin["name"]
             if name not in available_plugins:
                 network_source = network_source_details(plugin)
                 if context.allow_network_reference_install and network_source is not None:
-                    expected_version = plugin.get("resolved", {}).get("version") if isinstance(plugin.get("resolved"), Mapping) else None
+                    expected_version = expected_install_version(plugin)
                     findings.append(
                         _finding(
                             "WARNING",
@@ -672,7 +695,7 @@ def inspect_pack(
                 findings.append(_finding(severity, code, f"reference-only plugin is missing: {name}", plugin=name))
                 continue
             installed_version = available_plugins[name]
-            expected_version = plugin.get("resolved", {}).get("version") if isinstance(plugin.get("resolved"), Mapping) else None
+            expected_version = expected_install_version(plugin)
             if installed_version and expected_version and installed_version != expected_version:
                 findings.append(
                     _finding(
@@ -692,12 +715,32 @@ def inspect_pack(
         path = artifact.get("path")
         if not isinstance(path, str) or path not in entries:
             continue
+        bundle = plugin.get("bundle")
+        # Schema 3 adds exhaustive ordered-patch artifact validation. Older
+        # schemas retain their previous Preflight contract; Import still checks
+        # the actual installed patch declarations and contents.
+        if (manifest.get("schemaVersion") == 3
+                and isinstance(bundle, Mapping) and bundle.get("enabled") is True):
+            from .bundle import check_bundle_artifact
+            try:
+                check_bundle_artifact(entries[path], bundle.get("patch"))
+            except DshPackError as error:
+                findings.append(_finding(
+                    "BLOCKER" if plugin.get("required") is True else "WARNING",
+                    "BUNDLE_PATCH_INVALID", f"embedded Bundle patch check failed: {plugin['name']}",
+                    plugin=plugin["name"], error=str(error), patch=bundle.get("patch"),
+                ))
         identity = _artifact_package_identity(entries[path])
+        resolved = plugin.get("resolved")
+        resolution_unknown = isinstance(resolved, Mapping) and resolved.get("version") == "unknown"
         if identity is None:
+            if resolution_unknown:
+                findings.append(_finding("BLOCKER" if plugin.get("required") is True else "WARNING",
+                                         "PACKAGE_IDENTITY_DRIFT", "embedded package identity cannot be verified",
+                                         plugin=plugin["name"]))
             continue
         plugin["artifactIdentity"] = identity
-        resolved = plugin.get("resolved")
-        expected_version = resolved.get("version") if isinstance(resolved, Mapping) else None
+        expected_version = expected_install_version(plugin)
         drift: dict[str, dict[str, str]] = {}
         if identity["name"] != plugin["name"]:
             drift["name"] = {"expected": str(plugin["name"]), "actual": identity["name"]}
@@ -716,7 +759,8 @@ def inspect_pack(
         if drift:
             findings.append(
                 _finding(
-                    "WARNING",
+                    ("BLOCKER" if plugin.get("required") is True else "WARNING")
+                    if resolution_unknown else "WARNING",
                     "PACKAGE_IDENTITY_DRIFT",
                     f"embedded package identity differs from lock identity: {plugin['name']}",
                     plugin=plugin["name"],
@@ -740,6 +784,8 @@ def inspect_pack(
             "path": str(source_path),
             "format": manifest.get("format"),
             "packVersion": manifest.get("packVersion"),
+            "dataInventory": manifest.get("dataInventory", []),
+            "completeness": manifest.get("completeness", {}),
             "profile": manifest.get("profile"),
         },
         schema={"status": schema_status, "version": schema_version},
@@ -780,8 +826,7 @@ def render_text(result: PreflightResult) -> str:
     ]
     if result.plugins:
         for plugin in result.plugins:
-            resolved = plugin.get("resolved")
-            version = resolved.get("version", "missing") if isinstance(resolved, Mapping) else "missing"
+            version = expected_install_version(plugin) or "unknown"
             required = "required" if plugin.get("required") else "optional"
             artifact = plugin.get("artifact")
             mode = artifact.get("mode", "unknown") if isinstance(artifact, Mapping) else "unknown"

@@ -126,16 +126,23 @@ def validate_manifest(value: Any, *, require_integrity: bool = False) -> dict[st
     manifest = _object(value, "manifest")
     # Report an unsupported schema before checking version-specific required
     # fields, so a future schema cannot be misdiagnosed as a malformed v1 Pack.
-    if "schemaVersion" in manifest and manifest["schemaVersion"] != SCHEMA_VERSION:
+    if "schemaVersion" in manifest and (type(manifest["schemaVersion"]) is not int or manifest["schemaVersion"] not in {1, 2, 3}):
         raise SchemaValidationError(
             f"unsupported manifest.schemaVersion: {manifest['schemaVersion']!r}; expected {SCHEMA_VERSION}"
         )
     allowed = {"schemaVersion", "format", "packVersion", "profile", "environment", "requiredSecrets", "integrity"}
+    if manifest.get("schemaVersion") in {2, 3}:
+        _validate_completeness(manifest.get("completeness"))
+        if not isinstance(manifest.get("dataInventory"), list):
+            raise SchemaValidationError("schema 2 requires dataInventory")
+        allowed.update({"exportMode", "dataInventory", "completeness"})
+        if not isinstance(manifest.get("exportMode"), str) or manifest["exportMode"] not in {"share", "freeze", "custom"}:
+            raise SchemaValidationError("schema 2 requires exportMode")
     required = {"schemaVersion", "format", "packVersion", "profile", "environment"}
     if require_integrity:
         required.add("integrity")
     _strict_keys(manifest, allowed, required, "manifest")
-    if manifest["schemaVersion"] != SCHEMA_VERSION:
+    if manifest["schemaVersion"] not in {1, 2, 3}:
         raise SchemaValidationError(
             f"unsupported manifest.schemaVersion: {manifest['schemaVersion']!r}; expected {SCHEMA_VERSION}"
         )
@@ -160,6 +167,30 @@ def validate_manifest(value: Any, *, require_integrity: bool = False) -> dict[st
     if "integrity" in manifest:
         validate_integrity(manifest["integrity"])
     return manifest
+
+
+
+def _validate_completeness(value: Any) -> None:
+    data = _object(value, "manifest.completeness")
+    arrays = {"embedded", "referenceOnly", "secretNameOnly", "excluded", "unsupported"}
+    keys = arrays | {"hostDependencies", "offlineRestorable", "verification", "reason"}
+    _strict_keys(data, keys, keys, "manifest.completeness")
+    for key in arrays:
+        if not isinstance(data[key], list) or any(not isinstance(x, str) or not x for x in data[key]):
+            raise SchemaValidationError(f"completeness.{key} must be an array of names")
+    if not isinstance(data["hostDependencies"], list):
+        raise SchemaValidationError("completeness.hostDependencies must be an array")
+    for item in data["hostDependencies"]:
+        host = _object(item, "host dependency")
+        _strict_keys(host, {"name", "version", "requiredBy"}, {"name", "version"}, "host dependency")
+        for key in host:
+            _string(host[key], "host dependency." + key)
+    # Export declarations are not runtime evidence. YES belongs in a separately
+    # executed verification report, never in this format's export claim.
+    expected = "NO" if data["referenceOnly"] else "UNPROVEN"
+    if data["offlineRestorable"] != expected or data["verification"] != "UNTESTED":
+        raise SchemaValidationError("export completeness cannot claim verified restoration")
+    _string(data["reason"], "completeness.reason")
 
 
 def validate_environment(value: Any) -> dict[str, Any]:
@@ -201,10 +232,37 @@ def _validate_package_name(value: Any, path: str) -> str:
     return name
 
 
+def bundle_patch_paths(value: Any) -> tuple[str, ...]:
+    """Return safe patch paths in declared composition order, accepting legacy strings."""
+    values = [value] if isinstance(value, str) else value
+    if not isinstance(values, list) or not values:
+        raise SchemaValidationError("bundle.patch must be a string or a non-empty ordered array of strings")
+    paths: list[str] = []
+    for item in values:
+        path = _string(item, "bundle.patch item").replace("\\", "/")
+        if path.startswith("./"):
+            path = path[2:]
+        if ":" in path:
+            raise SchemaValidationError("bundle.patch path cannot contain a drive or alternate stream")
+        validate_archive_path(f"package/{path}", expected_root="package")
+        reserved = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+        if any(part.rstrip(" .") != part or part.split(".", 1)[0].casefold() in reserved for part in path.split("/")):
+            raise SchemaValidationError("bundle.patch path contains a non-portable Windows filename")
+        if path.casefold() in {prior.casefold() for prior in paths}:
+            raise SchemaValidationError("bundle.patch contains duplicate paths")
+        paths.append(path)
+    return tuple(paths)
+
+
+def validate_format_pair(manifest: Mapping[str, Any], lock: Mapping[str, Any]) -> None:
+    if lock.get("schemaVersion") == 2 and manifest.get("schemaVersion") != 3:
+        raise SchemaValidationError("ordered Bundle patch arrays require manifest schema 3 and plugins.lock schema 2")
+
+
 def validate_plugins_lock(value: Any, *, artifact_paths: set[str] | None = None) -> dict[str, Any]:
     lock = _object(value, "plugins.lock")
     _strict_keys(lock, {"schemaVersion", "plugins"}, {"schemaVersion", "plugins"}, "plugins.lock")
-    if lock["schemaVersion"] != SCHEMA_VERSION:
+    if type(lock["schemaVersion"]) is not int or lock["schemaVersion"] not in {1, 2}:
         raise SchemaValidationError(
             f"unsupported plugins.lock.schemaVersion: {lock['schemaVersion']!r}; expected {SCHEMA_VERSION}"
         )
@@ -250,7 +308,9 @@ def validate_plugins_lock(value: Any, *, artifact_paths: set[str] | None = None)
         bundle_enabled = _boolean(bundle["enabled"], f"{path}.bundle.enabled")
         if bundle_enabled:
             _integer(bundle["order"], f"{path}.bundle.order", minimum=0)
-            _string(bundle["patch"], f"{path}.bundle.patch")
+            if isinstance(bundle["patch"], list) and lock["schemaVersion"] != 2:
+                raise SchemaValidationError("Bundle patch arrays require plugins.lock schema 2")
+            bundle_patch_paths(bundle["patch"])
         else:
             if bundle["order"] is not None or bundle["patch"] is not None:
                 raise SchemaValidationError(f"{path}.bundle.order and patch must be null when bundle.enabled is false")
