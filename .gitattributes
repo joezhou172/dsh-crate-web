@@ -1,4 +1,5 @@
 * text=auto
+packaging/windows-terminal/*.patch text eol=lf
 *.png binary
 *.jpg binary
 *.tgz binary
