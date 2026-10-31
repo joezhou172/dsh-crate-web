@@ -7,6 +7,7 @@ import { open, mkdir, readdir, lstat, readFile, writeFile } from 'node:fs/promis
 import { createServer } from 'node:net'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { inspectorApplicability } from './runtime-inventory.mjs'
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const inside = (root, path) => { const part = relative(resolve(root), resolve(path)); return part === '' || (!part.startsWith('..') && !isAbsolute(part)) }
@@ -61,7 +62,9 @@ export function validateSurface(value, home, webPort) {
     throw new Error('Verification backend identity does not match its isolated desktop')
   }
   if (!Number.isInteger(webPort) || webPort < 1 || webPort > 65535) throw new Error('Owned backend Web port missing from startup log')
-  return { ...value, webPort, authenticationContext: 'official owned desktop protocol and authenticated profiles route; credentials not exported' }
+  const inspector = inspectorApplicability(value.runtimePlugins, value.runtimeInventoryComplete)
+  const { runtimePlugins, runtimeInventoryComplete, ...surface } = value
+  return { ...surface, inspector, webPort, authenticationContext: 'official owned desktop protocol and authenticated profiles route; credentials not exported' }
 }
 
 class Cdp {
@@ -247,7 +250,8 @@ export class DesktopController {
       let result; try { result = await backend.json() } catch { result = {} }
       return { accountMenu, httpStatus: response.status, origin: location.origin, protocol: location.protocol, hostname: location.hostname,
         backendHttpStatus: backend.status, backendStatus: result.status, runtimePid: result.runtime?.pid,
-        runtimeHome: result.runtime?.dshHome, runtimeProfile: result.runtime?.currentProfile };
+          runtimeHome: result.runtime?.dshHome, runtimeProfile: result.runtime?.currentProfile,
+          runtimePlugins: result.runtimePlugins, runtimeInventoryComplete: result.runtimeInventoryComplete };
     })()`)
     const log = join(this.config.job, `desktop-${this.generation}.stdout.log`)
     if ((await lstat(log)).size > 1024 * 1024) throw new Error('Owned desktop startup log exceeded observation limit')

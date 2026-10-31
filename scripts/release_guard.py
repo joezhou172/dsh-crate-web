@@ -100,7 +100,7 @@ def inspect_tarball(path: Path, known_secrets=()):
             relative = name[len("package/"):]
             parts = PurePosixPath(relative).parts
             allowed = (relative in {"package.json", "README.md", "README.zh-CN.md", "LICENSE", "THIRD-PARTY-LICENSE.txt", "cordis.patch.yml",
-                                    "restart-helper.mjs", "verify-desktop.mjs", "desktop-patch-helper.mjs"}
+                                    "restart-helper.mjs", "verify-desktop.mjs", "desktop-patch-helper.mjs", "runtime-inventory.mjs"}
                        or relative in {"lib/index.js", "lib/client.js", "lib/index.d.ts", "lib/client.d.ts"}
                        or (relative.startswith("core/dsh_pack/") and relative.endswith(".py"))
                        or relative.startswith("runtime/python/")
@@ -117,7 +117,7 @@ def inspect_tarball(path: Path, known_secrets=()):
             findings.extend(scan_blob(relative, data, known_secrets))
     required = {"package.json", "README.md", "cordis.patch.yml", "lib/index.js", "lib/client.js", "lib/index.d.ts",
                 "core/dsh_pack/__main__.py", "core/dsh_pack/importer.py", "core/dsh_pack/verify.py",
-                "restart-helper.mjs", "verify-desktop.mjs", "desktop-patch-helper.mjs",
+                "restart-helper.mjs", "verify-desktop.mjs", "desktop-patch-helper.mjs", "runtime-inventory.mjs",
                 "runtime/python/python.exe", "runtime/python/python314.zip", "runtime/python/python314._pth",
                 "runtime/python/LICENSE.txt", "THIRD-PARTY-LICENSE.txt"}
     for missing in sorted(required - payloads.keys()):

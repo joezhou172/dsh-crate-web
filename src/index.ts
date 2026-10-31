@@ -1,3 +1,4 @@
+import { readRuntimeInventory } from '../runtime-inventory.mjs'
 /** Host half: a small local HTTP bridge to the installed dsh-crate Core CLI. */
 
 import { randomUUID } from 'node:crypto'
@@ -63,32 +64,6 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-/** Cordis FiberState enum values; mirrors dsh-host-plugin-inventory phases. */
-const RUNTIME_FIBER_PHASE: Record<number, string | null> = {
-  0: 'pending', 1: 'loading', 2: 'active', 3: 'failed', 4: null, 5: 'unloading',
-}
-
-/** Read-only projection of the currently running Loader's non-group entries. */
-function listRuntimePlugins(ctx: Context): JsonObject[] {
-  const loader = ctx.loader
-  if (!loader || typeof loader.entries !== 'function') return []
-  const rows: JsonObject[] = []
-  try {
-    for (const entry of loader.entries()) {
-      if (entry.options.group) continue
-      if (entry.options.name.startsWith('cordis:')) continue
-      rows.push({
-        id: entry.id,
-        name: entry.options.name,
-        enabled: entry.disabled !== true,
-        phase: entry.fiber ? (RUNTIME_FIBER_PHASE[entry.fiber.state] ?? null) : null,
-      })
-    }
-  } catch {
-    // The Loader tree may be mid-teardown during a restart; the next poll re-reads it.
-  }
-  return rows
-}
 
 function json(res: ServerResponse, status: number, body: JsonObject): void {
   const payload = JSON.stringify(body)
@@ -673,15 +648,15 @@ async function createProfile(home: string, body: JsonObject, workspace: { root: 
   return { status: 'ok', command: 'create-profile', exitCode: 0, profile: row ?? { name: profileName, plugins: DEFAULT_CREATE_BUNDLES, installedBundles: [] }, history: item }
 }
 
-async function handleApi(home: string, body: JsonObject, runtimePlugins: JsonObject[] = []): Promise<JsonObject> {
+async function handleApi(home: string, body: JsonObject, runtimePlugins: object[] = [], runtimeInventoryComplete = false): Promise<JsonObject> {
   const action = body.action as Action
   const workspace = await ensureWorkspace(home)
   if (action === 'profiles') {
     const runtime = currentRuntime(home)
-    const isOfficialRow = (row: JsonObject): boolean =>
-      typeof row.name === 'string' && isOfficialPackage(row.name)
+    const isOfficialRow = (row: object): boolean =>
+      'name' in row && typeof row.name === 'string' && isOfficialPackage(row.name)
     const classifiedPlugins = runtimePlugins.map(row => ({ ...row, official: isOfficialRow(row) }))
-    return { status: 'ok', profiles: await listProfiles(home), runtimePlugins: classifiedPlugins, runtime }
+    return { status: 'ok', profiles: await listProfiles(home), runtimePlugins: classifiedPlugins, runtimeInventoryComplete, runtime }
   }
   if (action === 'create-profile') return createProfile(home, body, workspace)
   if (action === 'history') return { status: 'ok', history: await readHistory(workspace.history) }
@@ -971,7 +946,8 @@ export function apply(ctx: Context, config: WindowsTerminalConfig = {}): void {
         if (rejectRequest(connection, req, res)) return
         if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
         try {
-          const result = await handleApi(home, await readRequest(req), listRuntimePlugins(ctx))
+          const inventory = readRuntimeInventory(ctx)
+          const result = await handleApi(home, await readRequest(req), inventory.rows, inventory.complete)
           json(res, 200, result)
         } catch (error) {
           json(res, 400, { status: 'failed', error: { message: failMessage(error) } })

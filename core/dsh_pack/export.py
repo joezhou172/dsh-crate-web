@@ -492,12 +492,22 @@ def _with_bundle_composition(profile_files: dict[str, bytes], bundles: Sequence[
     profile_files["package.json"] = (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
 
 
-def _npm_command(configured: str | None) -> str:
+def _npm_command(configured: str | None) -> str | tuple[str, ...]:
     if configured:
         return configured
-    if os.name == "nt":
-        return shutil.which("npm.cmd") or shutil.which("npm") or "npm.cmd"
-    return shutil.which("npm") or "npm"
+    available = (shutil.which("npm.cmd") if os.name == "nt" else None) or shutil.which("npm")
+    if available:
+        return available
+    value = os.environ.get("DSH_PACK_PNPM_COMMAND")
+    if value:
+        try:
+            argv = json.loads(value)
+        except ValueError:
+            argv = None
+        if not isinstance(argv, list) or not argv or not all(isinstance(item, str) and item and "\x00" not in item for item in argv):
+            raise ExportError("DSH_PACK_PNPM_COMMAND must be a nonempty JSON argv array", stage="package-artifact", code="EXPORT_PACK_COMMAND_INVALID")
+        return tuple(argv)
+    return "npm.cmd" if os.name == "nt" else "npm"
 
 
 def _bundle_patch_path(package_dir: Path, package_name: str, patch: str) -> str:
@@ -613,13 +623,14 @@ def _validate_tarball(content: bytes, package_name: str, required_file: str | Se
 def _npm_pack(
     package_dir: Path,
     package_name: str,
-    npm_command: str,
+    npm_command: str | tuple[str, ...],
     *,
     required_file: str | Sequence[str] | None = None,
 ) -> bytes:
     with tempfile.TemporaryDirectory(prefix="dsh-pack-npm-") as directory:
         cache_directory = Path(directory) / "npm-cache"
         cache_directory.mkdir()
+        is_pnpm = isinstance(npm_command, tuple)
         command = [
             npm_command,
             "pack",
@@ -630,24 +641,56 @@ def _npm_pack(
             "--cache",
             str(cache_directory),
         ]
-        completed = subprocess.run(
-            command,
-            cwd=package_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=120,
-        )
+        environment = None
+        if is_pnpm:
+            command = [*npm_command, "pack", "--pack-destination", directory,
+                       "--skip-manifest-obfuscation", "--config.ignore-scripts=true",
+                       "--config.ignore-pnpmfile=true", "--config.offline=true",
+                       "--config.pm-on-fail=ignore", "--config.runtime-on-fail=ignore"]
+            environment = dict(os.environ, ELECTRON_RUN_AS_NODE="1")
+        try:
+            completed = subprocess.run(
+                command, cwd=package_dir, capture_output=True, text=True,
+                check=False, timeout=120, **({"env": environment} if environment is not None else {}),
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise ExportError(
+                f"Cannot pack {package_name}: {error}. Install npm or use the desktop-provided pnpm entry.",
+                stage="package-artifact", code="EXPORT_PACK_START_FAILED",
+                details={"package": package_name, "command": command, "cwd": str(package_dir), "originalError": str(error)},
+            ) from error
         if completed.returncode != 0:
             raise ExportError(
                 f"npm pack failed for {package_name} with exit code {completed.returncode}: "
-                f"{completed.stderr.strip() or completed.stdout.strip()}"
+                f"{completed.stderr.strip() or completed.stdout.strip()}",
+                stage="package-artifact", code="EXPORT_PACK_FAILED",
+                details={"package": package_name, "command": command, "cwd": str(package_dir),
+                         "exitCode": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr},
             )
         tarballs = sorted(Path(directory).glob("*.tgz"))
         if len(tarballs) != 1:
             raise ExportError(f"npm pack produced {len(tarballs)} tarballs for {package_name}")
         content = tarballs[0].read_bytes()
     _validate_tarball(content, package_name, required_file)
+    if is_pnpm:
+        # pnpm strips fields even with --skip-manifest-obfuscation. Preserve the
+        # installed manifest exactly; the artifact is a snapshot, not a publish.
+        import io
+        manifest = (package_dir / "package.json").read_bytes()
+        output = io.BytesIO()
+        with tarfile.open(fileobj=io.BytesIO(content), mode="r:gz") as source:
+            manifests = [member for member in source.getmembers() if member.name == "package/package.json"]
+            if len(manifests) != 1 or not manifests[0].isfile():
+                raise ExportError(f"pnpm pack artifact has no unique regular package manifest: {package_name}")
+            with tarfile.open(fileobj=output, mode="w:gz") as target:
+                for member in source.getmembers():
+                    if member.name == "package/package.json":
+                        member.size = len(manifest)
+                        target.addfile(member, io.BytesIO(manifest))
+                    else:
+                        target.addfile(member, source.extractfile(member) if member.isfile() else None)
+        content = output.getvalue()
+        _validate_tarball(content, package_name, required_file)
     return content
 
 
@@ -663,7 +706,7 @@ def _plugin_lock_entry(
     specifier: str,
     bundle_order: int | None,
     options: PluginExportOptions,
-    npm_command: str,
+    npm_command: str | tuple[str, ...],
 ) -> tuple[dict[str, Any], dict[str, bytes]]:
     package_dir, package_manifest = _installed_package(profile_dir, package_name, bundle=bundle_order is not None)
     installed_name = _string(package_manifest.get("name", package_name), f"{package_name}.package.json.name")

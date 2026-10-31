@@ -1,11 +1,11 @@
 # DSH Crate — Preview
 
-DSH Crate 为 DeepSeek Harness 的设置页提供环境包导出、检查、恢复、验证和历史记录。正式 npm 包名是 `dsh-crate-web`；本候选为 `0.1.2-preview.3`，使用 `preview` 标签，保留既有 `latest`。
+DSH Crate 为 DeepSeek Harness 的设置页提供环境包导出、检查、恢复、验证和历史记录。正式 npm 包名是 `dsh-crate-web`；本候选为 `0.1.2-preview.5`，使用 `preview` 标签，保留既有 `latest`。
 
 可通过官方插件入口安装明确版本：
 
 ```powershell
-dsh plugin --profile web add dsh-crate-web@0.1.2-preview.3
+dsh plugin --profile web add dsh-crate-web@0.1.2-preview.5
 ```
 
 重启后打开 Settings → DSH Crate。离线环境可从同版本 tgz 安装。Windows x64 随包保留 Python 3.14.6，无需另外安装系统 Python。其他系统未完成本轮桌面验收。
@@ -23,3 +23,5 @@ Import 默认恢复到新 Profile，先执行 Preflight 和计划检查。覆盖
 工作流先扫描提交与实际 tgz，再让发布任务复用同一 tgz 并核对 SHA-256。新代码必须升 prerelease 版本；同版本不同内容会停止。现有 npm Trusted Publisher 对应本仓库和 `publish-dsh-crate-web.yml`，无需把长期 npm Token 写入仓库。
 
 宿主依赖：DSH 模块与 React 由目标 DSH 宿主提供，npm 将这些 peer 标记为 optional，避免在空 Profile 中自动安装另一套旧 DSH。这不表示插件可以脱离 DSH 运行，也不跳过实际宿主服务检查；客户端 UI 组件仍须由 DSH 模块加载器提供。发布流程对最终 tgz 执行普通干净安装，不使用 legacy-peer-deps 或 force。官方 CLI 与真实桌面的覆盖以对应版本的验证报告为准。
+
+本候选修复了两个实际入口问题：无系统 npm 时，Export 可以复用桌面提供的 pnpm，禁用打包脚本与钩子并保留源清单；默认 Verify 根据完整的运行插件清单判断 Inspector 端点是否适用，清单不完整或已启用的 Inspector 缺监听时仍失败。Windows x64 / 原装 DSH 0.2.1-rc.5 下，前一候选的页面导出、下载、检查和新 Profile 恢复真实通过；本候选使用同一配置、仅更新 Crate 制品的诊断包，真实通过恢复、默认 Verify 的组合、启动、页面就绪、空白会话动作和清理。会话动作遵循官方行为，复用了已有空白会话，没有制造新的会话文件。默认 Verify 总结果仍为 UNTESTED：零模型，没有覆盖模型、原生工具、计划重启和其后的插件测试；本轮也没有覆盖启用 Inspector 的真实运行或历史 Worker 取消故障。诊断包不是本候选重新完成的页面 Export，不能将两轮证据合称为完整候选验收。

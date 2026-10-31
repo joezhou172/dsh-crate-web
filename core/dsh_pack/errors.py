@@ -28,6 +28,20 @@ class IntegrityError(DshPackError):
 class ExportError(DshPackError):
     """A Profile cannot be exported into a valid DSH Pack."""
 
+    def __init__(self, message: str, *, stage: str | None = None, code: str | None = None, details: dict | None = None) -> None:
+        super().__init__(message)
+        self.stage, self.code, self.details = stage, code, details
+
+    def as_dict(self) -> dict:
+        result = {"message": str(self)}
+        if self.stage is not None:
+            result["stage"] = self.stage
+        if self.code is not None:
+            result["code"] = self.code
+        if self.details is not None:
+            result["details"] = self.details
+        return result
+
 
 class PackImportError(DshPackError):
     """A Pack cannot be prepared as a new Profile."""

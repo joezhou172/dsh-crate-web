@@ -34,7 +34,8 @@ assert.match(output, /maxRetries: 0/)
 assert.equal(/id: dsh-crate-web\s+disabled: true/.test(output), false)
 const ready = { protocol: 'dsh-app:', hostname: 'app', origin: 'dsh-app://app', accountMenu: true,
   httpStatus: 200, backendHttpStatus: 200, backendStatus: 'ok', runtimePid: 17,
-  runtimeHome: controller.home, runtimeProfile: 'desktop' }
+  runtimeHome: controller.home, runtimeProfile: 'desktop', runtimeInventoryComplete: true,
+  runtimePlugins: [{ id: 'workspace-controller', name: '@deepseek-ai/dsh-api-workspace-controller', enabled: true, phase: 'active' }] }
 assert.equal(validateSurface(ready, controller.home, 56789).webPort, 56789)
 assert.equal(validateSurface({ ...ready, origin: 'null' }, controller.home, 56789).webPort, 56789)
 assert.throws(() => validateSurface({ ...ready, hostname: 'shell' }, controller.home, 56789), /ready failed/)

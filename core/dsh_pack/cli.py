@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Sequence
 
-from .errors import DshPackError, PackImportError
+from .errors import DshPackError, ExportError, PackImportError
 from .export import EMBEDDED, REFERENCE_ONLY, ExportOptions, PluginExportOptions, export_profile
 from .importer import ImportOptions, create_import_plan, delete_profile, import_pack
 from .preflight import PreflightContext, inspect_pack, render_text
@@ -250,7 +250,7 @@ def _run_export(args: argparse.Namespace) -> int:
             return 0
         result = export_profile(args.profile, args.output, options=options)
     except (DshPackError, OSError, ValueError, json.JSONDecodeError) as error:
-        payload = {"status": "failed", "error": {"message": str(error)}}
+        payload = {"status": "failed", "error": error.as_dict() if isinstance(error, ExportError) else {"message": str(error)}}
         if args.json:
             _emit(payload, args.command)
         else:

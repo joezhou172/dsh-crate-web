@@ -154,6 +154,9 @@ class DesktopVerifyAdapter:
 
     def _surface(self):
         value = self._rpc('surface')
+        inspector = value.get('inspector')
+        if not isinstance(inspector, dict) or inspector.get('inventoryComplete') is not True or type(inspector.get('applicable')) is not bool:
+            raise RuntimeError('Inspector applicability not confirmed: runtime inventory missing or incomplete')
         self.endpoints[f'web-{self.generation}'] = value['webPort']
         table = tcp_rows()
         with self.lock:
@@ -163,6 +166,9 @@ class DesktopVerifyAdapter:
         evidence = []
         for name, port in self.endpoints.items():
             if not name.endswith('-' + str(self.generation)):
+                continue
+            if name.startswith('inspector-') and not inspector['applicable']:
+                evidence.append({'name': name, 'port': port, 'status': 'NOT_APPLICABLE', 'applicability': inspector})
                 continue
             listeners = [row for row in table if row['localPort'] == port and row['state'] == 'LISTEN']
             if not listeners or not all(row['pid'] in pids for row in listeners):
