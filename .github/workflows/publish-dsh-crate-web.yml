@@ -15,6 +15,7 @@ on:
       - "*.mjs"
       - "README*"
       - "scripts/release_*.py"
+      - "scripts/release_consumer.mjs"
       - "scripts/npm-release.mjs"
       - "tests/test_release*.py"
       - ".github/workflows/publish-dsh-crate-web.yml"
@@ -30,6 +31,7 @@ on:
       - "*.mjs"
       - "README*"
       - "scripts/release_*.py"
+      - "scripts/release_consumer.mjs"
       - "scripts/npm-release.mjs"
       - "tests/test_release*.py"
       - ".github/workflows/publish-dsh-crate-web.yml"
@@ -82,6 +84,9 @@ jobs:
           mkdir release
           npm pack . --ignore-scripts --json --pack-destination ./release > release/npm-pack.json
           python scripts/release_policy.py --pack-report release/npm-pack.json --output release/audit.json --github-output "$GITHUB_OUTPUT"
+      - name: 最终 tgz 必须可在空环境普通安装
+        run: |
+          node scripts/release_consumer.mjs "$(node -p "'release/' + JSON.parse(require('fs').readFileSync('release/audit.json', 'utf8')).filename")" work/clean-consumer
       - uses: actions/upload-artifact@v4
         with:
           name: crate-npm-preview
@@ -93,7 +98,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: crate-release-test-observations
-          path: work/test-observations/
+          path: |
+            work/test-observations/
+            work/clean-consumer/report.json
+            work/clean-consumer/stdout.log
+            work/clean-consumer/stderr.log
           if-no-files-found: ignore
           retention-days: 7
 
