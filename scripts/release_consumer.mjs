@@ -1,5 +1,6 @@
 // 最终 tgz 的干净消费安装门槛；不使用开发源码或跳过 peer 检查。
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
@@ -55,13 +56,27 @@ async function main() {
     const installed = join(root, 'consumer/node_modules/dsh-crate-web')
     const pkg = JSON.parse(await readFile(join(installed, 'package.json'), 'utf8'))
     assert.equal(pkg.name, 'dsh-crate-web')
+    const terminalRoot = join(installed, 'packaging/windows-terminal')
+    const terminalManifest = JSON.parse(await readFile(join(terminalRoot, 'manifest.json'), 'utf8'))
+    assert.equal(terminalManifest.schemaVersion, 1)
+    assert.equal(terminalManifest.patches.length, 5)
+    const patchNames = new Set()
+    for (const row of terminalManifest.patches) {
+      assert(/^[A-Za-z0-9@_.-]+\.patch$/.test(row.patch), '补丁名称必须位于当前资源目录')
+      assert(!patchNames.has(row.patch), '补丁重复')
+      patchNames.add(row.patch)
+      const data = await readFile(join(terminalRoot, row.patch))
+      assert.equal(createHash('sha256').update(data).digest('hex'), row.patchSha256, '安装后补丁哈希不符')
+    }
+    for (const name of ['build.py', 'README.md']) assert((await readFile(join(terminalRoot, name))).length > 0)
     const entry = await import(pathToFileURL(join(installed, 'lib/index.js')))
     assert.equal(typeof entry.apply, 'function')
     assert(entry.inject, '发布入口缺少宿主服务声明')
     const lock = JSON.parse(await readFile(join(root, 'consumer/package-lock.json'), 'utf8'))
     const autoInstalled = Object.keys(lock.packages).filter(key => key.includes('node_modules/@deepseek-ai/'))
     assert.deepEqual(autoInstalled, [], '空环境意外自动安装另一套 DSH')
-    Object.assign(result, { status: 'PASS', version: pkg.version, entryExports: Object.keys(entry), autoInstalledHostPackages: autoInstalled })
+    Object.assign(result, { status: 'PASS', version: pkg.version, entryExports: Object.keys(entry), autoInstalledHostPackages: autoInstalled,
+      windowsTerminalAssets: { files: 8, patchHashes: 'PASS', automaticDesktopPatch: false } })
   } catch (error) {
     result.error = error.message
     process.exitCode = 1

@@ -1,7 +1,7 @@
 {
   "name": "dsh-crate-web",
   "description": "DSH Web Settings surface for DSH Crate export, import, inspect, and history",
-  "version": "0.1.2-preview.5",
+  "version": "0.1.2-preview.6",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -30,7 +30,11 @@
     "skills/dsh-crate-troubleshooting/compatibility.json",
     "skills/dsh-crate-troubleshooting/reference/*.md",
     "THIRD-PARTY-LICENSE.txt",
-    "runtime-inventory.mjs"
+    "runtime-inventory.mjs",
+    "packaging/windows-terminal/build.py",
+    "packaging/windows-terminal/manifest.json",
+    "packaging/windows-terminal/README.md",
+    "packaging/windows-terminal/*.patch"
   ],
   "publishConfig": {
     "access": "public",

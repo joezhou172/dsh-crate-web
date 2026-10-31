@@ -1,11 +1,11 @@
 # DSH Crate — Preview
 
-DSH Crate 为 DeepSeek Harness 的设置页提供环境包导出、检查、恢复、验证和历史记录。正式 npm 包名是 `dsh-crate-web`；本候选为 `0.1.2-preview.5`，使用 `preview` 标签，保留既有 `latest`。
+DSH Crate 为 DeepSeek Harness 的设置页提供环境包导出、检查、恢复、验证和历史记录。正式 npm 包名是 `dsh-crate-web`；本候选为 `0.1.2-preview.6`，使用 `preview` 标签，保留既有 `latest`。
 
 可通过官方插件入口安装明确版本：
 
 ```powershell
-dsh plugin --profile web add dsh-crate-web@0.1.2-preview.5
+dsh plugin --profile web add dsh-crate-web@0.1.2-preview.6
 ```
 
 重启后打开 Settings → DSH Crate。离线环境可从同版本 tgz 安装。Windows x64 随包保留 Python 3.14.6，无需另外安装系统 Python。其他系统未完成本轮桌面验收。
@@ -14,7 +14,16 @@ Import 默认恢复到新 Profile，先执行 Preflight 和计划检查。覆盖
 
 默认 Verify 使用独立验证桌面并隔离 Home、工作区与缓存，不调用模型。模型、原生工具和各插件的真实业务验收必须有单独的执行证据；报告中的 UNTESTED 不能视为 PASS。
 
-此 npm 包仅含 Crate 插件、Core 和必要运行文件，不包含完整 DSH 桌面，也不向官方安装目录写入 Windows 终端或 NARB 补丁。历史业务证据来自配套的 Windows x64 / DSH 0.2.1-rc.5 独立修补桌面；本候选调整了正式包身份，尚未完成该身份下的完整桌面复测，不能宣称任意官方桌面均已兼容。
+此 npm 包包含 Crate 插件、Core、必要运行文件，以及供用户显式调用的 Windows 终端独立副本构建入口，不包含完整 DSH 桌面。安装插件不会向官方安装目录写入 Windows 终端或 NARB 补丁。历史业务证据来自配套的 Windows x64 / DSH 0.2.1-rc.5 独立修补桌面；尚未完成当前完整组合的模型及插件业务复测，不能宣称任意官方桌面均已兼容。
+
+`0.1.2-preview.6` 新增随包的 [Windows 终端宿主构建入口](./packaging/windows-terminal/README.md)。它针对 manifest 锁定的官方输入，使用随包控制台 Node 修复 runner 空 stdin／退出 127，并补齐退出码和终端生命周期；匹配的独立副本已通过恢复后、重启后、移除 Crate 后的真实终端及正常清理验证。这些宿主证据来自升版前同字节补丁，不等于新 npm 版本完成了模型业务验收。必须由用户显式运行脚本，目标为不存在的新目录；原安装保持不变：
+
+```powershell
+# <包目录> 是已安装 dsh-crate-web 的目录；Windows x64 可使用包内 Python。
+& "<包目录>\runtime\python\python.exe" "<包目录>\packaging\windows-terminal\build.py" --source "<匹配的官方桌面目录>" --destination "<不存在的新副本目录>"
+```
+
+输入 EXE、ASAR 和控制台 Node 哈希不匹配时会停止；构建不关闭完整性检查，但新副本 EXE 的原代码签名不再有效。该入口不包含 Inspector／NARB 补丁，也不会自动启动新副本或调用模型。
 
 已知限制：Windows 上 Import 偶发在临时 Profile 改为正式目录名时返回 WinError 5。界面会提示文件可能仍被占用或权限不足，并保留完整原始错误与回滚结果。请关闭正在使用目标目录的文件预览、编辑器或终端，核实权限与残留状态后手动重新导入；程序不会自动重试。历史故障的实际占用者尚未定位，当前提示不代表根因已修复。
 

@@ -23,6 +23,41 @@ PEM = re.compile(rb"-----BEGIN ([A-Z ]*PRIVATE KEY)-----\s*[A-Za-z0-9+/=\r\n]{64
 ASSIGN = re.compile(rb'''(?i)(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|client[_-]?secret)["']?\s*[:=]\s*["']([^"'\r\n]{12,})["']''')
 BEARER = re.compile(rb"(?i)Bearer[ \t]+([A-Za-z0-9_./+=-]{24,})")
 FORBIDDEN_PARTS = {"node_modules", "__pycache__", ".git", ".vibe-wise", ".understand-anything", "outputs", "work"}
+WINDOWS_TERMINAL_ROOT = "packaging/windows-terminal/"
+WINDOWS_TERMINAL_FILES = {WINDOWS_TERMINAL_ROOT + name for name in {
+    "build.py", "manifest.json", "README.md",
+    "dsh__node_modules__@deepseek-ai__dsh-sandbox-local__lib__index.js.patch",
+    "dsh__node_modules__@deepseek-ai__dsh-subprocess-local__lib__index.js.patch",
+    "dsh__node_modules__@deepseek-ai__dsh-terminal-bash__lib__index.js.patch",
+    "dsh__node_modules__node-pty__lib__windowsPtyAgent.js.patch",
+    "dsh__node_modules__node-pty__lib__windowsTerminal.js.patch",
+}}
+
+
+def inspect_windows_terminal_assets(payloads):
+    findings = [{"path": path, "rule": "missing-required-file"}
+                for path in sorted(WINDOWS_TERMINAL_FILES - payloads.keys())]
+    path = WINDOWS_TERMINAL_ROOT + "manifest.json"
+    if path not in payloads:
+        return findings
+    try:
+        manifest = json.loads(payloads[path])
+        if manifest["schemaVersion"] != 1:
+            raise ValueError("unsupported schema")
+        expected = {name for name in WINDOWS_TERMINAL_FILES if name.endswith(".patch")}
+        seen = set()
+        for row in manifest["patches"]:
+            name = WINDOWS_TERMINAL_ROOT + row["patch"]
+            if name not in expected or name in seen:
+                raise ValueError("unexpected patch")
+            seen.add(name)
+            if name in payloads and hashlib.sha256(payloads[name]).hexdigest() != row["patchSha256"]:
+                findings.append({"path": name, "rule": "windows-terminal-patch-hash"})
+        if seen != expected:
+            raise ValueError("incomplete patch set")
+    except (KeyError, TypeError, ValueError, UnicodeError):
+        findings.append({"path": path, "rule": "windows-terminal-manifest"})
+    return findings
 
 
 def scan_blob(name: str, data: bytes, known_secrets=()):
@@ -102,6 +137,7 @@ def inspect_tarball(path: Path, known_secrets=()):
             allowed = (relative in {"package.json", "README.md", "README.zh-CN.md", "LICENSE", "THIRD-PARTY-LICENSE.txt", "cordis.patch.yml",
                                     "restart-helper.mjs", "verify-desktop.mjs", "desktop-patch-helper.mjs", "runtime-inventory.mjs"}
                        or relative in {"lib/index.js", "lib/client.js", "lib/index.d.ts", "lib/client.d.ts"}
+                       or relative in WINDOWS_TERMINAL_FILES
                        or (relative.startswith("core/dsh_pack/") and relative.endswith(".py"))
                        or relative.startswith("runtime/python/")
                        or relative in {"skills/dsh-crate-troubleshooting/SKILL.md", "skills/dsh-crate-troubleshooting/compatibility.json"}
@@ -122,6 +158,7 @@ def inspect_tarball(path: Path, known_secrets=()):
                 "runtime/python/LICENSE.txt", "THIRD-PARTY-LICENSE.txt"}
     for missing in sorted(required - payloads.keys()):
         findings.append({"path": missing, "rule": "missing-required-file"})
+    findings.extend(inspect_windows_terminal_assets(payloads))
     pkg = json.loads(payloads.get("package.json", b"{}"))
     if pkg.get("name") != PACKAGE or pkg.get("publishConfig", {}).get("tag") != "preview":
         findings.append({"path": "package.json", "rule": "unexpected-package-or-tag"})

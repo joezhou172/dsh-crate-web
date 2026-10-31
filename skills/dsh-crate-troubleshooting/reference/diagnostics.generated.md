@@ -1,6 +1,6 @@
 # DSH Crate Diagnostic Codes
 
-> Generated from `core/dsh_pack/diagnostics.py` (schema v1, producer `dsh-crate`, crate 0.1.2-preview.5). Do not edit by hand.
+> Generated from `core/dsh_pack/diagnostics.py` (schema v1, producer `dsh-crate`, crate 0.1.2-preview.6). Do not edit by hand.
 
 Total codes: **79**. Stages: **16**.
 

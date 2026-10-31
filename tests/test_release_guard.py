@@ -11,11 +11,26 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-from release_guard import scan_blob, inspect_tarball
+from release_guard import scan_blob, inspect_tarball, inspect_windows_terminal_assets, WINDOWS_TERMINAL_FILES
 from release_policy import validate_metadata
 
 
 class ReleaseGuardTests(unittest.TestCase):
+    def test_windows_terminal_delivery_requires_all_exact_patch_assets(self):
+        payloads = {name: (ROOT / name).read_bytes() for name in WINDOWS_TERMINAL_FILES}
+        self.assertEqual(inspect_windows_terminal_assets(payloads), [])
+        name = next(name for name in payloads if name.endswith('.patch'))
+        corrupt = dict(payloads, **{name: payloads[name] + b'changed'})
+        self.assertTrue(any(x['rule'] == 'windows-terminal-patch-hash' for x in inspect_windows_terminal_assets(corrupt)))
+        missing = dict(payloads)
+        del missing[name]
+        self.assertTrue(any(x['path'] == name and x['rule'] == 'missing-required-file' for x in inspect_windows_terminal_assets(missing)))
+        path = 'packaging/windows-terminal/manifest.json'
+        manifest = json.loads(payloads[path])
+        manifest['patches'][0]['patch'] = '../outside.patch'
+        invalid = dict(payloads, **{path: json.dumps(manifest).encode()})
+        self.assertTrue(any(x['rule'] == 'windows-terminal-manifest' for x in inspect_windows_terminal_assets(invalid)))
+
     def test_tokens_and_local_credentials_are_reported_without_values(self):
         token = b"npm" + b"_" + b"aB9z" * 10
         report = scan_blob("source.ts", b"first\n" + token)
