@@ -91,6 +91,19 @@ class PackImportError(DshPackError):
             details.get("temporaryProfileStatus", "cleaned"),
         )
         temporary_profile_status = details.get("temporaryProfileStatus", failed_profile_status)
+        message = str(self)
+        rename_access_error = (
+            self.stage == "commit" and self.code == "IMPORT_FAILED"
+            and isinstance(observed, dict) and observed.get("winerror") in (5, 32)
+            and bool(observed.get("filename2"))
+        )
+        if rename_access_error:
+            # 错误 5 不能独自证明占用或 ACL 原因；保留原始 observed 与回滚裁决。
+            message = "无法完成 Profile 提交：Windows 拒绝目录改名，文件可能仍被占用，也可能是权限不足。"
+            default_next_step = (
+                "关闭正在使用目标目录的文件预览、编辑器或终端，确认目录权限，"
+                "并先核实诊断中的回滚和残留状态，再手动重新导入。"
+            )
         from .diagnostics import envelope_fields
         return {
             **envelope_fields(operation="import", status="FAIL", operation_id=details.get("operationId")),
@@ -116,7 +129,7 @@ class PackImportError(DshPackError):
             "severity": details.get("severity", "BLOCKER"),
             "canContinue": details.get("canContinue", False),
             "suggestedChecks": details.get("suggestedChecks") or _default_checks(self.stage, self.code),
-            "message": str(self),
+            "message": message,
             "details": details,
         }
 

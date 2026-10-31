@@ -1,6 +1,6 @@
 {
   "name": "dsh-crate-troubleshooting",
-  "skillVersion": "0.1.2-preview.1",
+  "skillVersion": "0.1.2-preview.2",
   "compatibility": {
     "dshCrate": ">=0.1.0 <0.1.3",
     "diagnosticSchema": [
