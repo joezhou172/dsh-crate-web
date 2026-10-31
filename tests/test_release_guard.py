@@ -85,5 +85,21 @@ assert.throws(()=>validateAudit({...audit,filename:'../outside'},hash,hash));
         self.assertIn("github.event.repository.private == false", publish)
         self.assertNotIn("NODE_AUTH_TOKEN:", data)
 
+    def test_publish_argument_is_unambiguously_a_local_tarball(self):
+        node = """
+import {publishArguments} from './scripts/npm-release.mjs';
+import {resolve,isAbsolute} from 'node:path';
+import assert from 'node:assert/strict';
+const input='release/dsh-crate-web-0.1.2-preview.2.tgz';
+const args=publishArguments(input);
+assert.equal(args[0],'publish');
+assert(isAbsolute(args[1]),'npm must receive a local path, not a GitHub shorthand');
+assert.equal(args[1],resolve(input));
+assert.equal(args[args.indexOf('--tag')+1],'preview');
+assert(args.includes('--ignore-scripts'));
+assert(args.includes('--fetch-retries=0'));
+"""
+        subprocess.run(["node", "--input-type=module", "-e", node], cwd=ROOT, check=True, capture_output=True)
+
 
 if __name__ == "__main__": unittest.main()

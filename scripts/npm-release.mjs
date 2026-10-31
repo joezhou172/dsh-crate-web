@@ -1,7 +1,7 @@
 // 只发布已经通过检查的 tgz；绝不隐式重新打包或覆盖已发布版本。
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
-import { join, basename } from 'node:path'
+import { join, basename, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
@@ -10,6 +10,10 @@ export function publicationDecision(status, remoteIntegrity, localIntegrity) {
   if (status !== 200) throw new Error(`npm registry 查询失败：HTTP ${status}；停止发布`)
   if (remoteIntegrity !== localIntegrity) throw new Error('此版本已经存在且制品不同；必须升版，禁止覆盖')
   return 'skip'
+}
+
+export function publishArguments(tarball) {
+  return ['publish', resolve(tarball), '--ignore-scripts', '--access', 'public', '--tag', 'preview', '--registry=https://registry.npmjs.org', '--fetch-retries=0']
 }
 
 export function validateAudit(audit, expectedSha256, actualSha256) {
@@ -39,7 +43,7 @@ async function main() {
     console.log('相同版本及相同制品已存在，无需重复发布；不更改 dist-tag。')
     return
   }
-  const args = ['publish', tarball, '--ignore-scripts', '--access', 'public', '--tag', 'preview', '--registry=https://registry.npmjs.org', '--fetch-retries=0']
+  const args = publishArguments(tarball)
   const result = spawnSync('npm', args, { stdio: 'inherit', shell: false })
   if (result.error) throw result.error
   if (result.status !== 0) throw new Error('npm 发布失败：请核对包的 Trusted Publisher / 组织发布权限，不要把 token 写入仓库')
