@@ -5,6 +5,7 @@ import { DshCratePage } from './DshCratePage.tsx'
 import { PluginListTab } from './PluginListTab.tsx'
 import { en, zh } from './locales.ts'
 import type { DshCrateLocaleKey } from './locales.ts'
+import { createAgentBridge } from './agent-bridge.ts'
 
 const NS = 'dsh.crate'
 
@@ -17,8 +18,10 @@ export const inject = ['slots', 'locale']
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { en, zh }), 'dsh-crate-web: dictionaries')
   const t = ctx.locale.bind(NS)
+  const agentBridge = createAgentBridge(ctx, () => t('agentUnavailable'))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section', id: 'dsh-crate', order: 30, label: () => t('nav'), locale: NS,
+    inject: () => ({ agentBridge }),
   }, DshCratePage))
   // Collapsible official/user plugin inventory. The tab id is namespaced
   // (`crate`, not `all`) on purpose: real community plugins such as
