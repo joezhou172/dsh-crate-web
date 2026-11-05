@@ -25,7 +25,10 @@ export function ReportDialog({ value, t, bridge, onClose }: {
   const [sent, setSent] = useState(false)
   const [feedback, setFeedback] = useState<DshCrateLocaleKey>()
   const [sendError, setSendError] = useState('')
-  const [target] = useState(() => bridge?.getAgentTarget())
+  const [target] = useState(() => {
+    // Optional forwarding must never prevent viewing/copying the diagnostic.
+    try { return bridge?.getAgentTarget() } catch { return undefined }
+  })
   const failed = typeof value === 'object' && value !== null && ('status' in value) && ['failed', 'FAIL'].includes(String(value.status))
   const record = value !== null && typeof value === 'object' ? value as Record<string, unknown> : {}
   const diagnostic = record.error !== null && typeof record.error === 'object' ? record.error as Record<string, unknown> : record

@@ -1,4 +1,5 @@
 export type DshCrateLocaleKey =
+  | 'importBlocked' | 'versionMismatch' | 'packRequires' | 'currentVersion' | 'blockedNextStep'
   | 'filterSelection' | 'filterSource' | 'filterAllSelections' | 'filterSelected' | 'filterUnselected' | 'filterAllSources' | 'clearFilters' | 'filterResults' | 'noMatchingPlugins'
   | 'selectedForExport' | 'includeInExport' | 'runtimeNotExportable' | 'officialRequired'
   | 'exportSelection' | 'exportOnlyHint' | 'installedContent' | 'chooseVersion' | 'addToExport' | 'packageName' | 'activateOnImport' | 'versionUntested' | 'filterPlugins' | 'filterVersions' | 'publishedVersion' | 'prerelease' | 'catalogUnavailable' | 'compression' | 'compressionFast' | 'compressionCompact' | 'referenceConfirmTitle' | 'referenceConfirmBody' | 'referenceList' | 'recordedSource' | 'backToEdit' | 'confirmExport'
@@ -32,6 +33,8 @@ export type DshCrateLocaleKey =
   | 'officialPlugins' | 'userPlugins' | 'officialBadge' | 'conflictWarning' | 'conflictBundles' | 'collapse' | 'expand'
 
 export const en: Record<DshCrateLocaleKey, string> = {
+  importBlocked: 'Import has not started', versionMismatch: 'Version mismatch', packRequires: 'Pack requires', currentVersion: 'Current',
+  blockedNextStep: 'Resolve the blocking issue or use a package prepared for this DSH version. Full details can be copied below.',
   backToExport: 'Back to export', doneSelecting: 'Done',
   discardExportDraft: 'Switch environment and discard the current export selection?',
   sizeFrozen: 'Measured snapshot · valid for 15 minutes. Export keeps this exact size.',
@@ -126,6 +129,8 @@ export const en: Record<DshCrateLocaleKey, string> = {
 }
 
 export const zh: Record<DshCrateLocaleKey, string> = {
+  importBlocked: '尚未开始导入', versionMismatch: '版本不匹配', packRequires: '包要求', currentVersion: '当前',
+  blockedNextStep: '请先解决阻断项，或使用为当前 DSH 版本准备的包。下方可查看并复制完整诊断。',
   backToExport: '返回导出', doneSelecting: '完成选择',
   discardExportDraft: '切换环境并放弃当前导出选择？',
   sizeFrozen: '已冻结快照，有效期 15 分钟；导出大小与此一致。',

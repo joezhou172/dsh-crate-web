@@ -231,8 +231,16 @@ function ImportPreview({ value, t, targetProfile, overwrite }: { value: Json; t:
   const secrets = isObject(result.secrets) ? result.secrets : {}
   const target = targetProfile?.trim() || String(result.targetProfile ?? profile.name ?? 'UNKNOWN')
   const safety = overwrite ? t('overwritePreview') : t('willNotOverwrite')
+  const blockers = objects(result.findings).filter(item => item.severity === 'BLOCKER')
   return <div className={css.preview}>
     <strong>{t('importPreview')}</strong>
+    {!result.canContinue ? <div role="alert" className={css.error} data-field="importBlocker">
+      <strong>{t('importBlocked')}</strong>
+      {blockers.slice(0, 3).map((item, index) => <p key={index}>{item.code === 'ENVIRONMENT_VERSION_MISMATCH'
+        ? `${t('versionMismatch')}: ${String(item.item ?? 'DSH/Node')} · ${t('packRequires')} ${String(item.expected ?? '')} / ${t('currentVersion')} ${String(item.observed ?? '')}`
+        : String(item.message ?? item.code ?? t('failureSummary')).split(/\r?\n/)[0]}</p>)}
+      <span>{t('blockedNextStep')}</span>
+    </div> : null}
     <div className={css.previewRow} data-field="targetProfile"><strong>{t('targetProfile')}</strong><span>{target}</span></div>
     <div className={css.previewRow} data-field="warningCount"><strong>{t('warningCount')}</strong><span>{warningCount}</span></div>
     <div className={css.previewRow} data-field="requiredPlugins"><strong>{t('requiredPlugins')}</strong><span>{requiredPlugins.length}</span></div>

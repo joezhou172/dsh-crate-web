@@ -4,19 +4,26 @@ DSH Crate 把 DeepSeek Harness 的一套 Profile 配置导出为 `.dshcrate`，�
 
 它是第三方社区项目。目前提供 **Preview** 版本，兼容范围以实际测试的组合为准。
 
-本轮发布候选为 **`0.1.2-preview.7`**，使用 `preview` 通道。迁移测试请固定安装此版本；发布状态以 npm 实际查询结果为准。
+本轮发布候选为 **`0.1.2-preview.8`**，使用 `preview` 通道。迁移测试请固定安装此版本；发布状态以 npm 实际查询结果为准。
 
 ## 安装与开始使用
 
 通过 DSH 自带的插件命令安装。下面以 `web` 为例，请换成你实际使用的 Profile 名称：
 
 ```powershell
-dsh plugin --profile web add dsh-crate-web@0.1.2-preview.7
+dsh plugin --profile web add dsh-crate-web@0.1.2-preview.8
 ```
 
 重启 DSH，进入 **Settings → DSH Crate**。Windows x64 包内带有 Python 3.14.6，无需另装系统 Python。离线安装可以使用同版本 tgz，但恢复时是否还需联网，取决于包内有没有包含所需插件制品。
 
 插件需要安装到目标 DSH Profile。全局安装 npm 包不能替代这一步；DSH 模块和 React 由宿主提供，Crate 不会为一个空目录自动装上另一套 DSH。
+
+## Preview.8 的兼容修复
+
+- 诊断弹窗通过显式可选依赖获取会话服务，修复 DSH 0.2.2 打开详情导致 Crate 白屏。会话服务不可用时仍可查看和复制诊断。
+- 适配 DSH 0.2.2 的官方 Bundle 目录模块迁移，保持配置等价检查。
+- 导入预检查阻断时直接显示版本要求和当前版本。不会绕过源包的精确版本要求。
+- 在官方 0.2.2-rc.1 的隔离桌面完成真实 UI 导入 10 个包，以及新环境打开、新建会话、重启；0.2.1-rc.5 的诊断弹窗回归通过。Windows 10 实机和完整插件业务仍未验收。
 
 ## Preview.7 的迁移功能
 
