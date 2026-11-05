@@ -4,19 +4,25 @@ DSH Crate 把 DeepSeek Harness 的一套 Profile 配置导出为 `.dshcrate`，�
 
 它是第三方社区项目。目前提供 **Preview** 版本，兼容范围以实际测试的组合为准。
 
-本轮发布候选为 **`0.1.2-preview.8`**，使用 `preview` 通道。迁移测试请固定安装此版本；发布状态以 npm 实际查询结果为准。
+本轮发布版本为 **`0.1.2-preview.9`**，使用 `preview` 通道。迁移测试请固定安装此版本；发布状态以 npm 实际查询结果为准。
 
 ## 安装与开始使用
 
 通过 DSH 自带的插件命令安装。下面以 `web` 为例，请换成你实际使用的 Profile 名称：
 
 ```powershell
-dsh plugin --profile web add dsh-crate-web@0.1.2-preview.8
+dsh plugin --profile web add dsh-crate-web@0.1.2-preview.9
 ```
 
 重启 DSH，进入 **Settings → DSH Crate**。Windows x64 包内带有 Python 3.14.6，无需另装系统 Python。离线安装可以使用同版本 tgz，但恢复时是否还需联网，取决于包内有没有包含所需插件制品。
 
 插件需要安装到目标 DSH Profile。全局安装 npm 包不能替代这一步；DSH 模块和 React 由宿主提供，Crate 不会为一个空目录自动装上另一套 DSH。
+
+## Preview.9 的默认目录修复
+
+- 未设置或留空 `DSH_HOME` 时，与官方 DSH 一致使用用户目录下的 `.dsh`，不再将当前 Profile 工作目录当成根目录；支持显式路径和 `~` 路径。
+- 保留准备阶段的目录读取错误，不再将 `scandir ENOENT` 误报为 Core 未安装。
+- 已在官方 DSH 0.2.2-rc.1、不设置 `DSH_HOME` 的隔离桌面中完成 10 个插件的真实界面导入。Win10 目标机器仍需验收。
 
 ## Preview.8 的兼容修复
 

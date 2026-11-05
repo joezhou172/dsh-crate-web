@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { installWindowsRunnerHook, prepareWindowsRunner, windowsTerminalRuntime, type SandboxHook, type WindowsTerminalConfig } from './windows-terminal.ts'
 import { createReadStream } from 'node:fs'
 import { access, copyFile, rename, lstat, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
-import { platform as osPlatform } from 'node:os'
+import { homedir, platform as osPlatform } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -161,6 +161,15 @@ function configuredCoreCommand(): CoreCommand | undefined {
 
 function isCommandNotFound(error: unknown): boolean {
   return isObject(error) && error.code === 'ENOENT'
+    && typeof error.syscall === 'string' && error.syscall.startsWith('spawn ')
+}
+
+/** Match official dsh-home-paths: env override, then ~/.dsh; never Profile cwd. */
+function resolveHome(): string {
+  const configured = process.env.DSH_HOME
+  const value = configured?.trim() ? configured : join(homedir(), '.dsh')
+  return resolve(value === '~' ? homedir()
+    : value.startsWith('~/') || value.startsWith('~\\') ? join(homedir(), value.slice(2)) : value)
 }
 
 async function spawnCore(home: string, command: CoreCommand, args: string[]): Promise<CoreRun> {
@@ -996,7 +1005,7 @@ async function handleDownload(home: string, req: IncomingMessage, res: ServerRes
 export const inject = ['webServer', 'connection']
 
 export function apply(ctx: Context, config: WindowsTerminalConfig = {}): void {
-  const home = resolve(process.env.DSH_HOME || process.cwd())
+  const home = resolveHome()
   const terminalRuntime = windowsTerminalRuntime(config)
   if (terminalRuntime) {
     ctx.inject(['sandbox'], (scoped) => {
