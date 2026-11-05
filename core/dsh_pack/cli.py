@@ -96,6 +96,7 @@ def _context(args: argparse.Namespace) -> PreflightContext:
 def _inspect_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     parser = subparsers.add_parser("inspect", help="read-only Pack preflight")
     parser.add_argument("pack", help="input .dshcrate")
+    parser.add_argument("--adapt-host", action="store_true", help="adapt supported DSH versions using verified target host artifacts")
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     parser.add_argument("--dsh-version", help="current DSH version")
     parser.add_argument("--node-version", help="current Node version")
@@ -177,6 +178,7 @@ def _reference_sources(values: list[str]) -> dict[str, Path]:
 def _import_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     parser = subparsers.add_parser("import", help="prepare a Pack as a new Profile")
     parser.add_argument("pack", help="input .dshcrate")
+    parser.add_argument("--adapt-host", action="store_true", help="adapt supported DSH versions using verified target host artifacts")
     parser.add_argument("--dsh-home", required=True, help="target isolated DSH_HOME")
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     parser.add_argument("--dsh-version", help="current DSH version")
@@ -189,6 +191,8 @@ def _import_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParse
     parser.add_argument("--target-profile", help="requested target Profile name; new imports refuse duplicate names")
     parser.add_argument("--overwrite", action="store_true", help="replace the selected existing Profile after explicit confirmation")
     parser.add_argument("--confirm-overwrite", action="store_true", help="confirm the destructive overwrite operation")
+    parser.add_argument("--incremental", choices=('add', 'update'))
+    parser.add_argument("--plan-token", help="confirmed incremental preview fingerprint")
     parser.add_argument(
         "--reference-plugin",
         action="append",
@@ -200,7 +204,21 @@ def _import_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParse
     parser.set_defaults(handler=_run_import)
 
 
+def _adapted_cli(args, callback):
+    from .compatibility import adapted_pack
+    try:
+        with adapted_pack(args.pack, args.dsh_version, _host_bundles_from_environment(), os.environ.get('DSH_PACK_RUNTIME_MODULES')) as (path, report):
+            adapted = argparse.Namespace(**vars(args))
+            adapted.pack, adapted.adapt_host, adapted.compatibility = path, False, report
+            return callback(adapted)
+    except (DshPackError, OSError, ValueError) as error:
+        _emit({"status": "failed", "error": error.as_dict() if isinstance(error, PackImportError) else {"message": str(error)}}, args.command)
+        return 1
+
+
 def _run_inspect(args: argparse.Namespace) -> int:
+    if getattr(args, 'adapt_host', False):
+        return _adapted_cli(args, _run_inspect)
     context = _context(args)
     if args.secret:
         available = set() if context.available_secrets is not None else set()
@@ -217,7 +235,7 @@ def _run_inspect(args: argparse.Namespace) -> int:
         )
     result = inspect_pack(args.pack, context=context)
     if args.json:
-        _emit(result.as_dict(), args.command)
+        _emit({**result.as_dict(), "compatibility": getattr(args, 'compatibility', None)}, args.command)
     else:
         print(render_text(result))
     return 1 if result.blockers else 0
@@ -299,6 +317,8 @@ def _run_export(args: argparse.Namespace) -> int:
 
 
 def _run_import(args: argparse.Namespace) -> int:
+    if getattr(args, 'adapt_host', False):
+        return _adapted_cli(args, _run_import)
     environment: dict[str, dict[str, str]] = {}
     for section, version in (("dsh", args.dsh_version), ("node", args.node_version)):
         if version:
@@ -325,6 +345,19 @@ def _run_import(args: argparse.Namespace) -> int:
             overwrite_existing_profile=args.overwrite,
             overwrite_confirmation="OVERWRITE" if args.confirm_overwrite else None,
         )
+        if args.incremental:
+            import tempfile
+            from .incremental import locked_plan, locked_execute
+            if args.overwrite or not args.target_profile:
+                raise ValueError('增量模式需要指定已有环境，不能同时覆盖')
+            with tempfile.TemporaryDirectory(prefix='dsh-crate-incremental-') as directory:
+                if args.plan_only:
+                    preview, _, _ = locked_plan(args.pack, args.dsh_home, args.target_profile, args.incremental, options, directory)
+                    payload = {'status': 'plan', 'plan': preview, 'canContinue': True}
+                else:
+                    payload = locked_execute(args.pack, args.dsh_home, args.target_profile, args.incremental, options, args.plan_token, directory)
+                _emit({**payload, 'compatibility': getattr(args, 'compatibility', None)}, args.command)
+                return 0
         if args.plan_only:
             plan = create_import_plan(args.pack, args.dsh_home, options=options)
             payload = {"status": "plan", "readOnly": True, "plan": plan.as_dict()}
@@ -333,7 +366,8 @@ def _run_import(args: argparse.Namespace) -> int:
             else:
                 print(f"Plan: {plan.profile_name}")
             return 0
-        result = import_pack(args.pack, args.dsh_home, options=options)
+        from .incremental import protected_import
+        result = protected_import(args.pack, args.dsh_home, options)
     except (PackImportError, ValueError, OSError) as error:
         payload = {"status": "failed", "error": error.as_dict() if isinstance(error, PackImportError) else {"message": str(error)}}
         if args.json:
@@ -342,12 +376,12 @@ def _run_import(args: argparse.Namespace) -> int:
             print(f"Import failed: {payload['error'].get('message', str(error))}")
         return 1
     if args.json:
-        _emit(result.as_dict(), args.command)
+        _emit({**result, 'compatibility': getattr(args, 'compatibility', None)}, args.command)
     else:
-        print(f"Status: {result.status}")
-        print(f"Profile: {result.profile_path}")
-        print(f"Metadata: {result.metadata_path}")
-        print(f"Installed plugins: {len(result.installed_plugins)}")
+        print(f"Status: {result['status']}")
+        print(f"Profile: {result['profilePath']}")
+        print(f"Metadata: {result['metadataPath']}")
+        print(f"Installed plugins: {len(result['installedPlugins'])}")
     return 0
 
 

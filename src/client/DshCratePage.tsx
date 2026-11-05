@@ -1,4 +1,6 @@
 import { PluginFilters, emptyPluginFilter, hasPluginFilter, matchesPluginFilter } from './PluginFilters.tsx'
+import { failureSummaries } from './failure-summary.ts'
+import { IncrementalImport } from './IncrementalImport.tsx'
 import { ExportSelection, ReferenceConfirmation } from './ExportSelection.tsx'
 import type { CatalogPlugin, ExportChoice } from './ExportSelection.tsx'
 import { SizePreview } from './SizePreview.tsx'
@@ -78,7 +80,7 @@ export const STYLE = `
 `
 
 type Tab = 'export' | 'import' | 'inspect' | 'verify' | 'history'
-type ImportMode = 'new' | 'overwrite'
+type ImportMode = 'new' | 'overwrite' | 'add' | 'update'
 export type Json = Record<string, unknown>
 interface Profile { name: string; installedBundles: Json[] }
 interface HistoryItem { time?: string; action?: string; status?: string; profile?: string; pack?: string; message?: string }
@@ -207,14 +209,21 @@ export function statusLabel(value: unknown, t: (key: DshCrateLocaleKey) => strin
   return key ? t(key) : String(value ?? t('statusUnknown'))
 }
 
-function Report({ value, t }: { value: Json | undefined; t: (key: DshCrateLocaleKey) => string }) {
+function FailureSummary({ value, t }: { value: Json; t: (key: DshCrateLocaleKey) => string }) {
+  const summaries = failureSummaries(value, t)
+  return summaries.length ? <div role="alert" data-field="failureSummary" className={css.finding}>
+    {summaries.map(item => <div key={item.title}><strong className={css.error}>{item.title}</strong><div>{item.next}</div></div>)}
+  </div> : null
+}
+
+function Report({ value, t, showFailure = true }: { value: Json | undefined; t: (key: DshCrateLocaleKey) => string; showFailure?: boolean }) {
   if (value === undefined) return null
   const result = resultOf(value)
   const findings = objects(result.findings)
   return <div className={css.report} data-status={String(result.status ?? 'UNKNOWN')}>
     <strong>{t('coreStatus')} · {statusLabel(result.status ?? value.status, t)}</strong>
     {findings.length ? <span>{t('findings')}: {findings.length}</span> : null}
-    {diagnosticOf(value) ? <p className={css.error}>{t('failureSummary')}</p> : null}
+    {showFailure ? <FailureSummary value={value} t={t} /> : null}
     <DetailsButton value={value} t={t} />
   </div>
 }
@@ -231,15 +240,12 @@ function ImportPreview({ value, t, targetProfile, overwrite }: { value: Json; t:
   const secrets = isObject(result.secrets) ? result.secrets : {}
   const target = targetProfile?.trim() || String(result.targetProfile ?? profile.name ?? 'UNKNOWN')
   const safety = overwrite ? t('overwritePreview') : t('willNotOverwrite')
-  const blockers = objects(result.findings).filter(item => item.severity === 'BLOCKER')
   return <div className={css.preview}>
     <strong>{t('importPreview')}</strong>
-    {!result.canContinue ? <div role="alert" className={css.error} data-field="importBlocker">
+    {isObject(result.compatibility) ? <div data-field="hostAdaptation">{t('adaptedHost')}: {String(result.compatibility.from)} → {String(result.compatibility.to)}</div> : null}
+    {!result.canContinue ? <div data-field="importBlocker">
       <strong>{t('importBlocked')}</strong>
-      {blockers.slice(0, 3).map((item, index) => <p key={index}>{item.code === 'ENVIRONMENT_VERSION_MISMATCH'
-        ? `${t('versionMismatch')}: ${String(item.item ?? 'DSH/Node')} · ${t('packRequires')} ${String(item.expected ?? '')} / ${t('currentVersion')} ${String(item.observed ?? '')}`
-        : String(item.message ?? item.code ?? t('failureSummary')).split(/\r?\n/)[0]}</p>)}
-      <span>{t('blockedNextStep')}</span>
+      <FailureSummary value={value} t={t} />
     </div> : null}
     <div className={css.previewRow} data-field="targetProfile"><strong>{t('targetProfile')}</strong><span>{target}</span></div>
     <div className={css.previewRow} data-field="warningCount"><strong>{t('warningCount')}</strong><span>{warningCount}</span></div>
@@ -337,6 +343,7 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
   const busyRef = useRef(false)
   const [error, setError] = useState('')
   const [importMode, setImportMode] = useState<ImportMode>('new')
+  const [adaptHost, setAdaptHost] = useState(false)
   const [importTarget, setImportTarget] = useState('')
   const [deleteTarget, setDeleteTarget] = useState('')
   const [deleteReport, setDeleteReport] = useState<Json>()
@@ -465,7 +472,7 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
     setBusy(true); setError('')
     if (action === 'export') setDownloadSelection('')
     try {
-      const value = await request(action, body)
+      const value = await request(action, { ...body, ...(action === 'inspect' || action === 'import' ? { adaptHost } : {}) })
       setReport(value)
       const result = resultOf(value)
       const profileLabel = String(body.profileName ?? '')
@@ -475,7 +482,7 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
         setDownloadSelection(exportSignature)
         showToast(`${t('exportSuccess')} ${profileLabel}`.trim())
       } else if (action === 'inspect') {
-        showToast(t('inspectSuccess'))
+        showToast(result.canContinue === false ? t('cannotProceed') : t('inspectSuccess'))
       } else if (action === 'verify' && value.success !== true) {
         showToast(`${t('verifyFinished')} ${profileLabel} · ${statusLabel(result.status, t)}`.trim())
       }
@@ -589,7 +596,7 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
     if (!window.confirm(`${t('overwriteWarning')}\n\n${target}`)) { setError(t('overwriteCanceled')); return }
     setBusy(true); setError('')
     try {
-      const value = await request('import', { packBase64: await toBase64(file), targetProfile: target, overwrite: true, confirmOverwrite: true })
+      const value = await request('import', { packBase64: await toBase64(file), targetProfile: target, overwrite: true, confirmOverwrite: true, adaptHost })
       setReport(value)
       if (value.status === 'failed' || !(isObject(value.result) && value.result.status === 'prepared')) {
         openDetails(value); showToast(t('error'))
@@ -614,7 +621,7 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
     setNewProfileDialogError('')
     setBusy(true); setError('')
     try {
-      const value = await request('import', { packBase64: await toBase64(file), targetProfile: target, overwrite: false, confirmOverwrite: false })
+      const value = await request('import', { packBase64: await toBase64(file), targetProfile: target, overwrite: false, confirmOverwrite: false, adaptHost })
       setReport(value)
       if (value.status === 'failed' || !(isObject(value.result) && value.result.status === 'prepared')) {
         openDetails(value); showToast(t('error'))
@@ -667,7 +674,7 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
     <div className={css.tabs} role="tablist">
       {(['export', 'import', 'inspect', 'verify', 'history'] as Tab[]).map(item => <button key={item} className={css.tab} data-active={tab === item} type="button" role="tab" aria-selected={tab === item} onClick={() => setTab(item)}>{t(item)}</button>)}
     </div>
-    {error ? <div role="alert" className={css.error}>{t('failureSummary')} <DetailsButton value={{ status: 'failed', message: error }} t={t} /></div> : null}
+    {error ? <div><FailureSummary value={{ status: 'failed', message: error }} t={t} /><DetailsButton value={{ status: 'failed', message: error }} t={t} /></div> : null}
     {tab === 'export' ? <div className={css.form}>
       {profiles.length === 0 ? <p className={css.muted}>{t('noProfiles')}</p> : <>
         <h3 className="dsh-crate-section-title">{t('exportHeading')}</h3>
@@ -737,18 +744,21 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
         <Report value={downloadSelection === exportSignature ? report : undefined} t={t} />
       </>}
     </div> : null}
-    {tab === 'import' ? <div className={css.form}>
+    {tab === 'import' ? <fieldset disabled={busy} className={css.form} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
       {input}
-      <label className={css.label}>{t('importMode')}<select className={css.select} value={importMode} onChange={event => setImportMode(event.target.value as ImportMode)}><option value="new">{t('newProfile')}</option><option value="overwrite">{t('overwriteProfile')}</option></select></label>
+      <label><input type="checkbox" disabled={busy} checked={adaptHost} onChange={event => { setAdaptHost(event.target.checked); setReport(undefined) }} /> {t('adaptHost')}</label>
+      <button className="dsh-crate-secondary" disabled={busy || !file} onClick={() => { if (file) void inspectFile(file) }}>{t('inspectButton')}</button>
+      <label className={css.label}>{t('importMode')}<select className={css.select} value={importMode} onChange={event => setImportMode(event.target.value as ImportMode)}><option value="new">{t('newProfile')}</option><option value="overwrite">{t('overwriteProfile')}</option><option value="add">{t('incrementalAdd')}</option><option value="update">{t('incrementalUpdate')}</option></select></label>
       {importMode === 'new' ? <label className={css.label}>{t('newProfileName')}<input className={css.file} value={importTarget} placeholder={t('newProfileName')} onChange={event => setImportTarget(event.target.value)} /></label> : <>
         <label className={css.label}>{t('targetProfile')}<select className={css.select} value={importTarget || profiles[0]?.name || ''} onChange={event => setImportTarget(event.target.value)}>{profiles.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
-        <p className={css.error}>{t('overwriteWarning')}</p>
+        {importMode === 'overwrite' ? <p className={css.error}>{t('overwriteWarning')}</p> : null}
       </>}
-      {report ? <ImportPreview value={report} t={t} targetProfile={(importMode === 'overwrite' ? (importTarget || profiles[0]?.name) : importTarget) || undefined} overwrite={importMode === 'overwrite'} /> : null}
+      {importMode === 'add' || importMode === 'update' ? <IncrementalImport file={file} target={importTarget || profiles[0]?.name || ''} mode={importMode} adaptHost={adaptHost} t={t} onBusy={setBusy} onResult={setReport} send={async body => { if (!file) throw Error(t('choosePack')); try { return await request('import', { ...body, packBase64: await toBase64(file) }) } catch (caught) { const value = { status: 'failed', error: { message: String(caught) } }; setReport(value); return value } }} /> : null}
+      {report && (importMode === 'new' || importMode === 'overwrite') ? <ImportPreview value={report} t={t} targetProfile={(importMode === 'overwrite' ? (importTarget || profiles[0]?.name) : importTarget) || undefined} overwrite={importMode === 'overwrite'} /> : null}
       {report ? <ImportSuccess value={report} t={t} /> : null}
-      {report ? <Report value={report} t={t} /> : null}
-      <button className={css.button} type="button" disabled={busy || !file || !canImport || (importMode === 'overwrite' && !importTarget && profiles.length === 0)} onClick={() => void importPack()}>{busy ? t('working') : t('importButton')}</button>
-    </div> : null}
+      {report ? <Report value={report} t={t} showFailure={importMode === 'add' || importMode === 'update' || resultOf(report).canContinue !== false} /> : null}
+      {importMode === 'new' || importMode === 'overwrite' ? <button className={css.button} type="button" disabled={busy || !file || !canImport || (importMode === 'overwrite' && !importTarget && profiles.length === 0)} onClick={() => void importPack()}>{busy ? t('working') : t('importButton')}</button> : null}
+    </fieldset> : null}
     {tab === 'inspect' ? <div className={css.form}>{input}<Report value={report} t={t} /><button className={css.button} type="button" disabled={busy || !file} onClick={async () => { if (file) await run('inspect', { packBase64: await toBase64(file) }) }}>{busy ? t('working') : t('inspectButton')}</button></div> : null}
     {tab === 'verify' ? <div className={css.form}>{profiles.length === 0 ? <p className={css.muted}>{t('noProfiles')}</p> : <>{profileSelect}<button className={css.button} type="button" disabled={busy || !profile} onClick={() => void run('verify', { profileName: profile, mode: 'web' })}>{busy ? t('working') : t('verifyButton')}</button><VerifyReport value={report} t={t} /></>}</div> : null}
     {tab === 'history' ? <ul className={css.history}>{history.length === 0 ? <li className={css.muted}>{t('noHistory')}</li> : history.map((item, index) => <li className={css.historyItem} key={`${item.time}-${index}`}><span>{item.time} · {(['export', 'import', 'inspect', 'verify'].includes(item.action ?? '') ? t(item.action as Tab) : item.action)} · {item.profile ?? item.pack ?? ''}</span><strong>{statusLabel(item.status, t)}</strong><DetailsButton value={item} t={t} /></li>)}</ul> : null}

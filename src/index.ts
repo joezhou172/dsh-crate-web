@@ -175,8 +175,12 @@ function resolveHome(): string {
 async function spawnCore(home: string, command: CoreCommand, args: string[]): Promise<CoreRun> {
   const selectedNames = args.flatMap((arg, index) =>
     (arg === '--embed' || arg === '--reference-only') && typeof args[index + 1] === 'string' ? [args[index + 1]!] : [])
-  const runtimeModules = await materializeDesktopModules(home, selectedNames)
   const hostBundlesFile = await writeDesktopHostBundles(home)
+  if (args.includes('--adapt-host') && hostBundlesFile) {
+    const evidence = JSON.parse(await readFile(hostBundlesFile, 'utf8'))
+    selectedNames.push(...Object.keys(evidence.bundles ?? {}))
+  }
+  const runtimeModules = await materializeDesktopModules(home, selectedNames)
   const desktopRoot = desktopRuntimeRoot()
   let pnpmCommand: string | undefined
   let patchAdapterCommand: string | undefined
@@ -195,12 +199,14 @@ async function spawnCore(home: string, command: CoreCommand, args: string[]): Pr
         ...process.env,
         ...command.env,
         DSH_HOME: home,
+        DSH_PACK_ACTIVE_PROFILE: String(currentRuntime(home).currentProfile ?? ''),
         DSH_PACK_CORE_MODE: '1',
         PYTHONDONTWRITEBYTECODE: '1',
         ...(runtimeModules ? { DSH_PACK_RUNTIME_MODULES: runtimeModules } : {}),
         ...(pnpmCommand ? { DSH_PACK_PNPM_COMMAND: pnpmCommand } : {}),
         ...(hostBundlesFile ? { DSH_PACK_HOST_BUNDLES_FILE: hostBundlesFile } : {}),
         ...(patchAdapterCommand ? { DSH_PACK_PATCH_ADAPTER_COMMAND: patchAdapterCommand } : {}),
+        ...(desktopRoot ? { DSH_PACK_CONFIG_MERGE_COMMAND: JSON.stringify([process.execPath, '--expose-internals', join(dirname(dirname(fileURLToPath(import.meta.url))), 'merge-config.mjs'), desktopRoot]) } : {}),
       },
       shell: false,
       windowsHide: true,
@@ -672,14 +678,15 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: object[
 
   if (action === 'inspect') {
     const pack = await savePack(workspace.work, 'inspect', body.packBase64)
-    const run = await runCore(home, ['inspect', pack, '--json', '--allow-network-reference-install', ...runtimeCoreArgs()])
+    const adaptationArgs = body.adaptHost === true ? ['--adapt-host'] : []
+    const run = await runCore(home, ['inspect', pack, '--json', '--allow-network-reference-install', ...adaptationArgs, ...runtimeCoreArgs()])
     try {
       const result = parseCore(run.stdout)
       let targetProfile: string | undefined
       let requestedProfileName: string | undefined
       let planFailure: JsonObject | undefined
       try {
-        const planArgs = ['import', pack, '--dsh-home', home, '--plan-only', '--json', ...runtimeCoreArgs()]
+        const planArgs = ['import', pack, '--dsh-home', home, '--plan-only', '--json', ...adaptationArgs, ...runtimeCoreArgs()]
         if (typeof body.targetProfile === 'string') planArgs.push('--target-profile', safeName(body.targetProfile, 'targetProfile'))
         if (body.overwrite === true) planArgs.push('--overwrite')
         const planRun = await runCore(home, planArgs)
@@ -826,6 +833,12 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: object[
   if (action === 'import') {
     const pack = await savePack(workspace.work, 'import', body.packBase64)
     const args = ['import', pack, '--dsh-home', home, '--json', ...runtimeCoreArgs()]
+    if (body.adaptHost === true) args.push('--adapt-host')
+    if (body.incremental === 'add' || body.incremental === 'update') {
+      args.push('--incremental', body.incremental)
+      if (body.planOnly === true) args.push('--plan-only')
+      else if (typeof body.planToken === 'string') args.push('--plan-token', body.planToken)
+    }
     if (typeof body.targetProfile === 'string') args.push('--target-profile', safeName(body.targetProfile, 'targetProfile'))
     if (body.overwrite === true) args.push('--overwrite')
     if (body.confirmOverwrite === true) args.push('--confirm-overwrite')
@@ -839,6 +852,7 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: object[
       return failure
     }
     const prepared = result as JsonObject
+    if (body.planOnly === true) return { status: 'ok', command: action, exitCode: run.code, result }
     const plan = prepared.plan
     const profileName = plan !== null && typeof plan === 'object' && !Array.isArray(plan) && typeof (plan as JsonObject).profileName === 'string'
       ? (plan as JsonObject).profileName as string

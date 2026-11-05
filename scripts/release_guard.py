@@ -135,7 +135,7 @@ def inspect_tarball(path: Path, known_secrets=()):
             relative = name[len("package/"):]
             parts = PurePosixPath(relative).parts
             allowed = (relative in {"package.json", "README.md", "README.zh-CN.md", "LICENSE", "THIRD-PARTY-LICENSE.txt", "cordis.patch.yml",
-                                    "restart-helper.mjs", "verify-desktop.mjs", "desktop-patch-helper.mjs", "runtime-inventory.mjs"}
+                                      "restart-helper.mjs", "verify-desktop.mjs", "desktop-patch-helper.mjs", "runtime-inventory.mjs", "merge-config.mjs"}
                        or relative in {"lib/index.js", "lib/client.js", "lib/index.d.ts", "lib/client.d.ts"}
                        or relative in WINDOWS_TERMINAL_FILES
                        or (relative.startswith("core/dsh_pack/") and relative.endswith(".py"))

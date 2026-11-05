@@ -1,4 +1,6 @@
 export type DshCrateLocaleKey =
+  | 'incrementalAdd' | 'incrementalUpdate' | 'incrementalKeep' | 'incrementalPreview' | 'incrementalConfig' | 'incrementalExecute' | 'incrementalConfirm' | 'snapshotHint' | 'adaptHost' | 'adaptedHost'
+  | 'failureDetailsHint' | 'versionMismatchNext' | 'missingArtifactSummary' | 'missingArtifactNext' | 'integritySummary' | 'integrityNext' | 'profileExistsNext' | 'missingSecretSummary' | 'missingSecretNext'
   | 'importBlocked' | 'versionMismatch' | 'packRequires' | 'currentVersion' | 'blockedNextStep'
   | 'filterSelection' | 'filterSource' | 'filterAllSelections' | 'filterSelected' | 'filterUnselected' | 'filterAllSources' | 'clearFilters' | 'filterResults' | 'noMatchingPlugins'
   | 'selectedForExport' | 'includeInExport' | 'runtimeNotExportable' | 'officialRequired'
@@ -33,6 +35,17 @@ export type DshCrateLocaleKey =
   | 'officialPlugins' | 'userPlugins' | 'officialBadge' | 'conflictWarning' | 'conflictBundles' | 'collapse' | 'expand'
 
 export const en: Record<DshCrateLocaleKey, string> = {
+  incrementalAdd: 'Add missing only', incrementalUpdate: 'Update and merge', incrementalKeep: 'Keep existing',
+  incrementalPreview: 'Preview changes', incrementalConfig: 'Configuration files to change', incrementalExecute: 'Snapshot and import',
+  incrementalConfirm: 'Create a local snapshot and apply these changes? On failure, restore the original environment.',
+  snapshotHint: 'A verified local snapshot is required. Switch away from the target environment before importing.',
+  adaptHost: 'Adapt 0.2.1-rc.5 packages to this 0.2.2-rc.1 installation', adaptedHost: 'Official components adapted to target DSH',
+  failureDetailsHint: 'Open details for the full diagnostic.',
+  versionMismatchNext: 'Choose a package prepared for the current version, or use a matching environment.',
+  missingArtifactSummary: 'A required plugin or package file is missing', missingArtifactNext: 'Export a complete package again, then retry.',
+  integritySummary: 'Package integrity check failed', integrityNext: 'Copy or download the original package again.',
+  profileExistsNext: 'Choose a new environment name.',
+  missingSecretSummary: 'Required credentials are missing', missingSecretNext: 'Configure the required credentials on this machine; do not add them to the package.',
   importBlocked: 'Import has not started', versionMismatch: 'Version mismatch', packRequires: 'Pack requires', currentVersion: 'Current',
   blockedNextStep: 'Resolve the blocking issue or use a package prepared for this DSH version. Full details can be copied below.',
   backToExport: 'Back to export', doneSelecting: 'Done',
@@ -129,6 +142,17 @@ export const en: Record<DshCrateLocaleKey, string> = {
 }
 
 export const zh: Record<DshCrateLocaleKey, string> = {
+  incrementalAdd: '只新增', incrementalUpdate: '更新并合并', incrementalKeep: '保留已有',
+  incrementalPreview: '预览差异', incrementalConfig: '将修改的配置文件', incrementalExecute: '快照并导入',
+  incrementalConfirm: '创建本机快照并执行上述修改？失败时自动恢复原环境。',
+  snapshotHint: '执行前必须完成快照校验。请先切换到其他环境，再向目标环境导入。',
+  adaptHost: '将 0.2.1-rc.5 包适配到当前 0.2.2-rc.1', adaptedHost: '官方组件已适配目标 DSH',
+  failureDetailsHint: '完整原因可在“查看详情”中查看和复制。',
+  versionMismatchNext: '请选择适配当前版本的迁移包，或使用与包要求一致的环境。',
+  missingArtifactSummary: '缺少必要的插件或包文件', missingArtifactNext: '请重新导出完整迁移包后再试。',
+  integritySummary: '迁移包完整性校验失败', integrityNext: '请重新复制或下载原始迁移包。',
+  profileExistsNext: '请为新环境换一个名称。',
+  missingSecretSummary: '缺少必要凭据', missingSecretNext: '请在本机配置所需凭据，不要将凭据放入迁移包。',
   importBlocked: '尚未开始导入', versionMismatch: '版本不匹配', packRequires: '包要求', currentVersion: '当前',
   blockedNextStep: '请先解决阻断项，或使用为当前 DSH 版本准备的包。下方可查看并复制完整诊断。',
   backToExport: '返回导出', doneSelecting: '完成选择',
