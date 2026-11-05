@@ -4,19 +4,26 @@ DSH Crate 把 DeepSeek Harness 的一套 Profile 配置导出为 `.dshcrate`，�
 
 它是第三方社区项目。目前提供 **Preview** 版本，兼容范围以实际测试的组合为准。
 
-本轮发布版本为 **`0.1.2-preview.9`**，使用 `preview` 通道。迁移测试请固定安装此版本；发布状态以 npm 实际查询结果为准。
+本轮发布版本为 **`0.1.2-preview.10`**，使用 `preview` 通道。迁移测试请固定安装此版本；发布状态以 npm 实际查询结果为准。
 
 ## 安装与开始使用
 
 通过 DSH 自带的插件命令安装。下面以 `web` 为例，请换成你实际使用的 Profile 名称：
 
 ```powershell
-dsh plugin --profile web add dsh-crate-web@0.1.2-preview.9
+dsh plugin --profile web add dsh-crate-web@0.1.2-preview.10
 ```
 
 重启 DSH，进入 **Settings → DSH Crate**。Windows x64 包内带有 Python 3.14.6，无需另装系统 Python。离线安装可以使用同版本 tgz，但恢复时是否还需联网，取决于包内有没有包含所需插件制品。
 
 插件需要安装到目标 DSH Profile。全局安装 npm 包不能替代这一步；DSH 模块和 React 由宿主提供，Crate 不会为一个空目录自动装上另一套 DSH。
+
+## Preview.10 的增量导入与跨版本适配
+
+- 导入可选“只新增”或“更新并合并”，先预览差异再确认；包中未出现的插件和配置字段保留。
+- 导入前快照目标 Profile 和导入记录，安装、准备或提交失败时自动恢复并校验。恢复失败会明确报告并保留现场；后续独立 Verify 失败不自动回滚。
+- 显式支持 `0.2.1-rc.5 -> 0.2.2-rc.1` 官方 Bundle 适配，仍执行完整预检查。第三方插件保持原身份，其他版本路径不自动放行。
+- 当前运行的目标环境不可增量更新；含 Home 数据的包暂不支持此快照流程。整体环境迁移、另一台 Win10、逐项插件业务功能仍需单独验收。
 
 ## Preview.9 的默认目录修复
 
