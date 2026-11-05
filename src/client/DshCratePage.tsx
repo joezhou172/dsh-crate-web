@@ -1,3 +1,7 @@
+import { PluginFilters, emptyPluginFilter, hasPluginFilter, matchesPluginFilter } from './PluginFilters.tsx'
+import { ExportSelection, ReferenceConfirmation } from './ExportSelection.tsx'
+import type { CatalogPlugin, ExportChoice } from './ExportSelection.tsx'
+import { SizePreview } from './SizePreview.tsx'
 import { CrateIcon } from './CrateIcon.tsx'
 import { DESIGN_STYLE } from './design-style.ts'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -22,6 +26,10 @@ export const css = {
 }
 
 export const STYLE = `
+.dsh-crate-choice{padding:10px 0;border-bottom:1px solid var(--dsw-alias-border-l2);overflow-wrap:anywhere}
+.dsh-crate-choice-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px}
+.dsh-crate-choice-controls>*{min-width:0;max-width:100%}
+.dsh-crate-choice label{font-size:13px}
 .dsh-crate-section{display:flex;flex-direction:column;gap:12px;max-width:760px;color:var(--dsw-alias-label-primary)}
 .dsh-crate-heading{margin:0;font-size:18px;font-weight:600}.dsh-crate-intro,.dsh-crate-muted{margin:0;font-size:13px;color:var(--dsw-alias-label-tertiary)}
 .dsh-crate-tabs{display:flex;gap:20px;border-bottom:1px solid var(--dsw-alias-border-l2);overflow:auto}.dsh-crate-tab{border:0;padding:7px 1px 9px;background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;cursor:pointer;white-space:nowrap}
@@ -274,9 +282,38 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
   const openDetails = (value: unknown) => setDetail({ value, key: ++detailSequence.current })
   const [managerOpen, setManagerOpen] = useState(false)
   const [tab, setTab] = useState<Tab>('export')
+  const [subpage, setSubpage] = useState<'export-plugins' | 'runtime-plugins' | null>(null)
+  const pageRoot = useRef<HTMLDivElement>(null)
+  const subpageHeading = useRef<HTMLHeadingElement>(null)
+  const returnFocus = useRef<HTMLElement | null>(null)
+  const mainScroll = useRef(0)
+  const scrollOwner = () => {
+    let node = pageRoot.current?.parentElement
+    while (node) {
+      if (/(auto|scroll)/.test(getComputedStyle(node).overflowY)) return node
+      node = node.parentElement
+    }
+    return document.scrollingElement as HTMLElement | null
+  }
+  const openSubpage = (page: 'export-plugins' | 'runtime-plugins') => {
+    returnFocus.current = document.activeElement as HTMLElement
+    mainScroll.current = scrollOwner()?.scrollTop ?? 0
+    setSubpage(page)
+  }
+  const closeSubpage = () => setSubpage(null)
+  useEffect(() => {
+    const owner = scrollOwner()
+    if (owner) owner.scrollTop = subpage ? 0 : mainScroll.current
+    if (subpage) subpageHeading.current?.focus({ preventScroll: true })
+    else returnFocus.current?.focus({ preventScroll: true })
+  }, [subpage])
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [profile, setProfile] = useState('')
-  const [modes, setModes] = useState<Record<string, string>>({})
+  const [choices, setChoices] = useState<ExportChoice[]>([])
+  const [catalog, setCatalog] = useState<CatalogPlugin[]>([])
+  const [catalogReady, setCatalogReady] = useState(false)
+  const [compression, setCompression] = useState('fast')
+  const [confirmReference, setConfirmReference] = useState(false)
   const [preset, setPreset] = useState('custom')
   const [secretNames, setSecretNames] = useState('')
   const [dataSelection, setDataSelection] = useState<Json[]>([])
@@ -300,6 +337,7 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
   const [runtime, setRuntime] = useState<Json>()
   const [runtimePlugins, setRuntimePlugins] = useState<Json[]>([])
   const [updatedAt, setUpdatedAt] = useState('')
+  const [runtimeFilter, setRuntimeFilter] = useState({ ...emptyPluginFilter })
   const [toast, setToast] = useState<{ key: number; text: string }>()
   const toastSeq = useRef(0)
   const showToast = (text: string) => { toastSeq.current += 1; setToast({ key: toastSeq.current, text }) }
@@ -313,31 +351,49 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
   const installedBundles = selectedProfile?.installedBundles ?? []
   const exportBundles = installedBundles.filter(bundle => bundle.active === true)
   const conflictBundles = installedBundles.filter(bundle => bundle.conflict === true)
-  const exportNames = exportBundles.map(bundle => String(bundle.name ?? '')).filter(Boolean)
+  const exportNames = choices.filter(row => row.included).map(row => row.name)
   const requiredSecrets = [...new Set(secretNames.split(/[\s,]+/).filter(Boolean))]
   const invalidSecretNames = requiredSecrets.some(name => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
   const exportBody = {
-    profileName: profile, includeInstalledBundles: true, preset, dataSelection, requiredSecrets,
-    embed: exportNames.filter(name => (modes[name] ?? 'embedded') === 'embedded'),
-    referenceOnly: exportNames.filter(name => (modes[name] ?? 'embedded') === 'reference-only'),
+    requestVersion: 2, profileName: profile, preset, dataSelection, requiredSecrets,
+    compression, plugins: choices,
   }
   const exportSignature = JSON.stringify(exportBody)
   const previewExport = async () => {
+    if (busyRef.current) return
+    busyRef.current = true
     setBusy(true); setError('')
     try {
       const value = await request('export-plan', exportBody)
       if (value.status === 'failed') { openDetails(value); setReviewedSelection(''); return }
+      if (typeof resultOf(value).planId !== 'string') throw new Error(t('catalogUnavailable'))
       setExportPlan(resultOf(value))
       setReviewedSelection(exportSignature)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught))
       setReviewedSelection('')
-    } finally { setBusy(false) }
+    } finally { busyRef.current = false; setBusy(false) }
   }
   useEffect(() => {
     setDataSelection([]); setDataOwners({}); setDataKinds({}); setSecretNames('')
     setExportPlan(undefined); setReviewedSelection('')
   }, [profile])
+  useEffect(() => {
+    let disposed = false
+    setChoices([]); setCatalog([]); setCatalogReady(false)
+    setConfirmReference(false)
+    if (profile) void request('export-catalog', { profileName: profile }).then(value => {
+      if (disposed) return
+      const result = resultOf(value)
+      if (value.status === 'failed' || result.requestVersion !== 2) { openDetails(value); return }
+      const items = objects(result.plugins) as unknown as CatalogPlugin[]
+      setCatalog(items)
+      setChoices(items.map(item => ({ name: item.name, included: true, selection: { kind: 'installed' }, artifactMode: 'embedded', activateOnImport: item.active })))
+      setCatalogReady(true)
+    }).catch(error => { if (!disposed) setError(String(error)) })
+    return () => { disposed = true }
+  }, [profile])
+  useEffect(() => { setConfirmReference(false) }, [exportSignature])
   const canImport = isObject(report?.result) && report.result.canContinue === true
   const currentRuntimeProfile = typeof runtime?.currentProfile === 'string' ? runtime.currentProfile : ''
 
@@ -396,6 +452,8 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
   }, [tab])
 
   const run = async (action: string, body: Json) => {
+    if (busyRef.current) return
+    busyRef.current = true
     setBusy(true); setError('')
     if (action === 'export') setDownloadSelection('')
     try {
@@ -406,7 +464,7 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
       if (value.status === 'failed' || result.status === 'failed' || result.status === 'FAIL') {
         openDetails(value); showToast(t('error'))
       } else if (action === 'export' && typeof value.downloadName === 'string') {
-        setDownloadSelection(JSON.stringify(body))
+        setDownloadSelection(exportSignature)
         showToast(`${t('exportSuccess')} ${profileLabel}`.trim())
       } else if (action === 'inspect') {
         showToast(t('inspectSuccess'))
@@ -418,7 +476,7 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
       setError(message)
       showToast(t('error'))
     }
-    finally { setBusy(false) }
+    finally { busyRef.current = false; setBusy(false) }
   }
   const createSelectedProfile = async () => {
     const target = createTarget.trim()
@@ -438,7 +496,7 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
       const message = caught instanceof Error ? caught.message : String(caught)
       setError(message)
       showToast(t('error'))
-    } finally { setBusy(false) }
+    } finally { busyRef.current = false; setBusy(false) }
   }
   const deleteSelectedProfile = async () => {
     const target = deleteTarget.trim()
@@ -458,7 +516,7 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
       const message = caught instanceof Error ? caught.message : String(caught)
       setError(message)
       showToast(t('error'))
-    } finally { setBusy(false) }
+    } finally { busyRef.current = false; setBusy(false) }
   }
   const switchSelectedProfile = async () => {
     const target = switchTarget.trim()
@@ -505,7 +563,7 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
       const message = caught instanceof Error ? caught.message : String(caught)
       setError(message)
       showToast(t('error'))
-    } finally { setBusy(false) }
+    } finally { busyRef.current = false; setBusy(false) }
   }
   const importPack = async () => {
     if (!file) return
@@ -536,7 +594,7 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
       const message = caught instanceof Error ? caught.message : String(caught)
       setError(message)
       showToast(t('error'))
-    } finally { setBusy(false) }
+    } finally { busyRef.current = false; setBusy(false) }
   }
   const confirmNewProfileImport = async () => {
     if (!file) return
@@ -562,7 +620,7 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
       const message = caught instanceof Error ? caught.message : String(caught)
       setError(message)
       showToast(t('error'))
-    } finally { setBusy(false) }
+    } finally { busyRef.current = false; setBusy(false) }
   }
   const inspectFile = async (nextFile: File | undefined) => {
     setFile(nextFile); setReport(undefined); setError('')
@@ -570,7 +628,10 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
     await run('inspect', { packBase64: await toBase64(nextFile) })
   }
   const input = <label className={css.label}>{t('choosePack')}<input className={css.file} type="file" accept=".dshcrate,application/zip" onChange={event => { void inspectFile(event.target.files?.[0]) }} /></label>
-  const profileSelect = <label className={css.label}>{t('profile')}<select aria-label={t('profile')} className={css.select} value={profile} onChange={event => setProfile(event.target.value)}>{profiles.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+  const profileSelect = <label className={css.label}>{t('profile')}<select aria-label={t('profile')} className={css.select} value={profile} onChange={event => {
+    if (choices.some(row => row.selection.kind === 'registry' || !row.included) && !window.confirm(t('discardExportDraft'))) return
+    setProfile(event.target.value)
+  }}>{profiles.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
   const profileManager = <details id="crate-profile-manager" className={css.inventory} data-field="profileManagement" open={managerOpen} hidden={!managerOpen}>
     <summary>{t('profileManagement')}</summary>
     <span className={css.muted}>{t('currentRunningProfile')}: {currentRuntimeProfile || t('none')}</span>
@@ -587,8 +648,9 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
     {deleteReport ? <Report value={deleteReport} t={t} /> : null}
   </details>
 
-  return <ReportContext.Provider value={openDetails}><div className={css.section}>
+  return <ReportContext.Provider value={openDetails}><div ref={pageRoot} className={css.section}>
     <style>{STYLE + DESIGN_STYLE}</style>
+    <div className="dsh-crate-page" hidden={subpage !== null}>
     <header className="dsh-crate-header">
       <div className="dsh-crate-brand"><CrateIcon name="cube" /><div><h2 className={css.heading}>{t('title')}</h2><p className={css.intro}>{t('intro')}</p></div></div>
       {profiles.length > 0 ? <button className="dsh-crate-manage" type="button" aria-expanded={managerOpen} aria-controls="crate-profile-manager" onClick={() => setManagerOpen(value => !value)}>{t('profileManagement')}</button> : null}
@@ -602,50 +664,32 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
       {profiles.length === 0 ? <p className={css.muted}>{t('noProfiles')}</p> : <>
         <h3 className="dsh-crate-section-title">{t('exportHeading')}</h3>
         <div className="dsh-crate-environment">{profileSelect}{profile === currentRuntimeProfile ? <span className="dsh-crate-running"><i aria-hidden="true" />{t('currentRunningProfile')}</span> : null}</div>
-        <div className="dsh-crate-disclosures">
-        <details className={css.inventory} data-field="runtimePlugins">
-          <summary>{t('runtimePlugins')} <span className="dsh-crate-count">{runtimePlugins.length}</span></summary>
-          <span className={css.muted}>{t('updatedAt')}: {updatedAt || t('none')}</span>
-          <button className={css.button} type="button" disabled={busy} onClick={() => { void loadProfiles().catch(caught => setError(caught instanceof Error ? caught.message : String(caught))) }}>{t('refresh')}</button>
-          {currentRuntimeProfile && selectedProfile?.name !== currentRuntimeProfile
-            ? <span className={css.muted}>{t('runtimePluginsInactive')}</span>
-            : runtimePlugins.length === 0
-              ? <span className={css.muted}>{t('none')}</span>
-              : (() => {
-                  const groups = splitOfficial(runtimePlugins)
-                  const row = (plugin: Json) => <div className={css.inventoryItem} data-field="runtimePlugin" key={`${String(plugin.id ?? plugin.name)}`}><PluginName name={String(plugin.name ?? 'unknown')} official={plugin.official === true} t={t} /><span>{plugin.enabled === true ? t('runtimeEnabled') : t('runtimeDisabled')} · {String(plugin.phase ?? '—')}</span></div>
-                  return <>
-                    <PluginGroup label={t('userPlugins')} count={groups.user.length} defaultOpen t={t}>{groups.user.map(row)}</PluginGroup>
-                    <PluginGroup label={t('officialPlugins')} count={groups.official.length} defaultOpen={false} t={t}>{groups.official.map(row)}</PluginGroup>
-                  </>
-                })()}
-        </details>
-        <details className={css.inventory}><summary>{t('declaredBundles')} <span className="dsh-crate-count">{exportBundles.length}</span></summary>{exportBundles.length === 0 ? <span className={css.muted}>{t('none')}</span> : (() => {
-          const groups = splitOfficial(exportBundles)
-          const row = (bundle: Json) => {
-            const name = String(bundle.name ?? '')
-            const conflict = bundle.conflict === true
-            return <div className={css.inventoryItem} key={`${name}-${String(bundle.version)}`}><span>{installedBundleLabel(bundle, t)}{conflict ? <span className={css.conflict}> · {t('conflictWarning')}</span> : null}</span><span>{String(bundle.patch ?? '')}</span><select aria-label={`${name} ${t('artifactMode')}`} className={css.select} disabled={conflict} value={modes[name] ?? 'embedded'} onChange={event => { setPreset('custom'); setModes(current => ({ ...current, [name]: event.target.value })) }}><option value="embedded">{t('embedded')}</option><option value="reference-only">{t('referenceOnly')}</option></select></div>
-          }
-          return <>
-            <PluginGroup label={t('userPlugins')} count={groups.user.length} defaultOpen t={t}>{groups.user.map(row)}</PluginGroup>
-            <PluginGroup label={t('officialPlugins')} count={groups.official.length} defaultOpen={false} t={t}>{groups.official.map(row)}</PluginGroup>
-          </>
-        })()}</details>
+        <div className="dsh-crate-page-links">
+          <button type="button" className="dsh-crate-page-link" data-field="exportPluginsEntry" disabled={busy} onClick={() => openSubpage('export-plugins')}>
+            <span>{t('exportSelection')}</span><span className="dsh-crate-count">{choices.filter(row => row.included).length}/{choices.length}</span><span aria-hidden="true">›</span>
+          </button>
+          <button type="button" className="dsh-crate-page-link" data-field="runtimePluginsEntry" onClick={() => openSubpage('runtime-plugins')}>
+            <span>{t('runtimePlugins')}</span><span className="dsh-crate-count">{runtimePlugins.length}</span><span aria-hidden="true">›</span>
+          </button>
         </div>
+        <label className={css.label}>{t('compression')}<select aria-label={t('compression')} className={css.select} disabled={busy} value={compression} onChange={event => setCompression(event.target.value)}>
+          <option value="fast">{t('compressionFast')}</option><option value="compact">{t('compressionCompact')}</option>
+        </select></label>
         {conflictBundles.length > 0 ? <div className={css.inventory} data-field="conflictBundles"><strong>{t('conflictBundles')}</strong>{conflictBundles.map(bundle => <div className={css.inventoryItem} key={`conflict-${String(bundle.name)}`}><span>{installedBundleLabel(bundle, t)}</span><span className={css.conflict}>{t('conflictWarning')}</span></div>)}</div> : null}
+        <details><summary>{t('advanced')}</summary>
         <label className="dsh-crate-preset">{t('exportPreset')} <select className={css.select} value={preset} disabled={busy} onChange={event => {
           const value = event.target.value
           setPreset(value)
-          if (value !== 'custom') setModes(Object.fromEntries(exportNames.map(name => [name, value === 'freeze' ? 'embedded' : 'reference-only'])))
+          if (value !== 'custom') setChoices(rows => rows.map(row => ({ ...row, artifactMode: value === 'freeze' ? 'embedded' : 'reference-only' })))
         }}><option value="share">{t('sharePreset')}</option><option value="freeze">{t('freezePreset')}</option><option value="custom">{t('customPreset')}</option></select></label>
-        <details><summary>{t('advanced')}</summary><label className={css.label}>{t('requiredSecrets')}
+<label className={css.label}>{t('requiredSecrets')}
           <input className={css.file} value={secretNames} disabled={busy} autoComplete="off" spellCheck={false} aria-describedby="crate-secret-hint" aria-invalid={invalidSecretNames} onChange={event => setSecretNames(event.target.value)} />
         </label>
         <p className={css.muted} id="crate-secret-hint">{t('secretNamesHint')}</p>
         {invalidSecretNames ? <p className={css.error} role="alert">{t('invalidSecretNames')}</p> : null}</details>
         {exportPlan ? <div className={css.inventory} data-field="exportPreview">
-          <strong>{t('requiredSecrets')}</strong><span data-field="reviewedSecrets">{Array.isArray(exportPlan.requiredSecrets) ? exportPlan.requiredSecrets.join(', ') || t('none') : t('none')}</span>
+          <SizePreview value={exportPlan.sizePreview} stale={reviewedSelection !== exportSignature} t={t} />
+          {Array.isArray(exportPlan.requiredSecrets) && exportPlan.requiredSecrets.length > 0 ? <><strong>{t('requiredSecrets')}</strong><span data-field="reviewedSecrets">{exportPlan.requiredSecrets.join(', ')}</span></> : null}
           <details><summary>{t('portableData')} · {objects(exportPlan.dataInventory).length}</summary><p>{t('privacyReview')}</p>
           {objects(exportPlan.dataInventory).map((item, index) => {
             const path = typeof item.path === 'string' ? item.path : ''
@@ -679,10 +723,10 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
             <DetailsButton value={exportPlan} t={t} />
           </> : null}
         </div> : null}
-        <div className="dsh-crate-export-actions"><button className={reviewedSelection === exportSignature ? 'dsh-crate-secondary' : css.button} type="button" disabled={busy || !profile || invalidSecretNames} onClick={() => void previewExport()}>{busy ? t('working') : t('previewExport')}</button><button className={css.button} type="button" disabled={busy || !profile || invalidSecretNames || reviewedSelection !== exportSignature} onClick={() => void run('export', exportBody)}>{busy ? t('exporting') : t('exportButton')}</button>{reviewedSelection !== exportSignature ? <span className={css.muted}>{t('previewFirst')}</span> : null}</div>
+        <div className="dsh-crate-export-actions"><button className={reviewedSelection === exportSignature ? 'dsh-crate-secondary' : css.button} type="button" disabled={busy || !profile || !catalogReady || !exportNames.length || invalidSecretNames} onClick={() => void previewExport()}>{busy ? t('working') : t('previewExport')}</button><button className={css.button} type="button" disabled={busy || !profile || invalidSecretNames || reviewedSelection !== exportSignature} onClick={() => { if (choices.some(row => row.included && row.artifactMode === 'reference-only')) setConfirmReference(true); else void run('export', { ...exportBody, planId: exportPlan?.planId }) }}>{busy ? t('exporting') : t('exportButton')}</button>{reviewedSelection !== exportSignature ? <span className={css.muted}>{t('previewFirst')}</span> : null}</div>
         {!busy && downloadSelection === exportSignature && isObject(report) && typeof report.downloadName === 'string' ? <a href={`/dsh-crate/download?name=${encodeURIComponent(report.downloadName)}`}>{t('download')}</a> : null}
-        <ExportPlugins value={report} t={t} />
-        <Report value={report} t={t} />
+        <ExportPlugins value={downloadSelection === exportSignature ? report : undefined} t={t} />
+        <Report value={downloadSelection === exportSignature ? report : undefined} t={t} />
       </>}
     </div> : null}
     {tab === 'import' ? <div className={css.form}>
@@ -700,6 +744,49 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
     {tab === 'inspect' ? <div className={css.form}>{input}<Report value={report} t={t} /><button className={css.button} type="button" disabled={busy || !file} onClick={async () => { if (file) await run('inspect', { packBase64: await toBase64(file) }) }}>{busy ? t('working') : t('inspectButton')}</button></div> : null}
     {tab === 'verify' ? <div className={css.form}>{profiles.length === 0 ? <p className={css.muted}>{t('noProfiles')}</p> : <>{profileSelect}<button className={css.button} type="button" disabled={busy || !profile} onClick={() => void run('verify', { profileName: profile, mode: 'web' })}>{busy ? t('working') : t('verifyButton')}</button><VerifyReport value={report} t={t} /></>}</div> : null}
     {tab === 'history' ? <ul className={css.history}>{history.length === 0 ? <li className={css.muted}>{t('noHistory')}</li> : history.map((item, index) => <li className={css.historyItem} key={`${item.time}-${index}`}><span>{item.time} · {(['export', 'import', 'inspect', 'verify'].includes(item.action ?? '') ? t(item.action as Tab) : item.action)} · {item.profile ?? item.pack ?? ''}</span><strong>{statusLabel(item.status, t)}</strong><DetailsButton value={item} t={t} /></li>)}</ul> : null}
+    </div>
+    <div className="dsh-crate-page" hidden={subpage === null} data-field="pluginSubpage">
+      <header className="dsh-crate-subpage-header">
+        <button type="button" className="dsh-crate-secondary dsh-crate-text-button" onClick={closeSubpage}><span aria-hidden="true">←</span>{t('backToExport')}</button>
+        <div><h2 ref={subpageHeading} tabIndex={-1} className="dsh-crate-section-title">{subpage === 'runtime-plugins' ? t('runtimePlugins') : t('exportSelection')}</h2>
+          <p className={css.muted}>{subpage === 'runtime-plugins' ? currentRuntimeProfile || t('none') : profile}</p></div>
+      </header>
+      <div className="dsh-crate-page" hidden={subpage !== 'export-plugins'} data-field="exportPluginsPage">
+        {catalogReady ? <ExportSelection key={profile} rows={choices} catalog={catalog} disabled={busy} t={t}
+          onChange={rows => { setChoices(rows); setPreset('custom') }} onError={openDetails}
+          query={packageName => request('registry-versions', { profileName: profile, packageName })} /> : <p className={css.muted}>{t('catalogUnavailable')}</p>}
+        <button type="button" className={css.button} onClick={closeSubpage}>{t('doneSelecting')}</button>
+      </div>
+      <div className="dsh-crate-page" hidden={subpage !== 'runtime-plugins'} data-field="runtimePlugins">
+            <p className={css.muted}>{t('exportOnlyHint')}</p>
+          <div className="dsh-crate-toolbar"><span className={css.muted}>{t('updatedAt')}: {updatedAt || t('none')}</span>
+          <button className="dsh-crate-secondary dsh-crate-text-button" type="button" disabled={busy} onClick={() => { void loadProfiles().catch(caught => setError(caught instanceof Error ? caught.message : String(caught))) }}>{t('refresh')}</button></div>
+          {currentRuntimeProfile && selectedProfile?.name !== currentRuntimeProfile
+            ? <span className={css.muted}>{t('runtimePluginsInactive')}</span>
+            : runtimePlugins.length === 0
+              ? <span className={css.muted}>{t('none')}</span>
+              : (() => {
+                  const runtimeChoice = (name: string) => choices.find(item => item.name === name) ?? choices.filter(item => name.startsWith(item.name + '/')).sort((a, b) => b.name.length - a.name.length)[0]
+                  const filtered = runtimePlugins.filter(plugin => matchesPluginFilter(runtimeFilter, String(plugin.name ?? ''), plugin.official === true, runtimeChoice(String(plugin.name ?? ''))?.included))
+                  const groups = splitOfficial(filtered)
+                  const row = (plugin: Json) => {
+                    const name = String(plugin.name ?? 'unknown')
+                    const choice = runtimeChoice(name)
+                    const required = choice && catalog.some(item => item.name === choice.name && item.official)
+                    return <div className={css.inventoryItem} data-field="runtimePlugin" key={String(plugin.id ?? plugin.name)}>
+                      {choice ? <label className="dsh-crate-runtime-choice"><input type="checkbox" aria-label={name + ' ' + t('includeInExport')} checked={choice.included} disabled={busy || required} onChange={event => { setChoices(rows => rows.map(item => item.name === choice.name ? { ...item, included: event.target.checked } : item)); setPreset('custom') }} /><span className="dsh-crate-sr-only">{t('includeInExport')}</span></label> : <span aria-hidden="true" />}
+                      <div className="dsh-crate-plugin-copy"><PluginName name={name} official={plugin.official === true} t={t} /><span className={css.muted}>{plugin.enabled === true ? t('runtimeEnabled') : t('runtimeDisabled')} · {String(plugin.phase ?? '—')}</span></div>
+                      {required || !choice ? <span className={css.muted}>{t(required ? 'officialRequired' : 'runtimeNotExportable')}</span> : null}
+                    </div>
+                  }
+                  return <>
+                    <PluginFilters value={runtimeFilter} onChange={setRuntimeFilter} count={filtered.length} total={runtimePlugins.length} t={t} />
+                    <PluginGroup key={'user-' + JSON.stringify(runtimeFilter)} label={t('userPlugins')} count={groups.user.length} defaultOpen t={t}>{groups.user.map(row)}</PluginGroup>
+                    <PluginGroup key={JSON.stringify(runtimeFilter)} label={t('officialPlugins')} count={groups.official.length} defaultOpen={hasPluginFilter(runtimeFilter)} t={t}>{groups.official.map(row)}</PluginGroup>
+                  </>
+                })()}
+      </div>
+    </div>
     {newProfileDialogOpen ? <div className={css.modalBackdrop} role="presentation">
       <div className={css.modal} role="dialog" aria-modal="true" aria-labelledby="dsh-crate-new-profile-title">
         <h3 id="dsh-crate-new-profile-title">{t('newProfileName')}</h3>
@@ -712,6 +799,7 @@ export function DshCratePage({ t, agentBridge }: PageProps) {
         </div>
       </div>
     </div> : null}
+    {confirmReference ? <ReferenceConfirmation evidence={objects(exportPlan?.referencePlugins)} rows={choices.filter(row => row.included && row.artifactMode === 'reference-only')} t={t} onCancel={() => setConfirmReference(false)} onConfirm={() => { setConfirmReference(false); void run('export', { ...exportBody, planId: exportPlan?.planId, confirmReferences: true }) }} /> : null}
     {detail ? <ReportDialog key={`report-${detail.key}`} value={detail.value} t={t} bridge={agentBridge} onClose={() => setDetail(undefined)} /> : null}
     {toast ? <Toast key={toast.key} text={toast.text} onDone={() => setToast(undefined)} /> : null}
   </div></ReportContext.Provider>

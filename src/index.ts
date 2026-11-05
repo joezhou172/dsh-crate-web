@@ -1,10 +1,10 @@
 import { readRuntimeInventory } from '../runtime-inventory.mjs'
 /** Host half: a small local HTTP bridge to the installed dsh-crate Core CLI. */
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { installWindowsRunnerHook, prepareWindowsRunner, windowsTerminalRuntime, type SandboxHook, type WindowsTerminalConfig } from './windows-terminal.ts'
 import { createReadStream } from 'node:fs'
-import { access, lstat, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { access, copyFile, rename, lstat, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { platform as osPlatform } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
@@ -25,7 +25,7 @@ const SAFE_OPERATION_ID = /^[0-9a-f-]{36}$/i
 const CRATE_PACKAGE_NAME = 'dsh-crate-web'
 
 type JsonObject = Record<string, unknown>
-type Action = 'profiles' | 'history' | 'inspect' | 'export' | 'export-plan' | 'import' | 'delete-profile' | 'create-profile' | 'switch-profile' | 'switch-status' | 'verify'
+type Action = 'export-catalog' | 'registry-versions' | 'profiles' | 'history' | 'inspect' | 'export' | 'export-plan' | 'import' | 'delete-profile' | 'create-profile' | 'switch-profile' | 'switch-status' | 'verify'
 
 interface CoreRun {
   code: number
@@ -656,7 +656,7 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: object[
     const isOfficialRow = (row: object): boolean =>
       'name' in row && typeof row.name === 'string' && isOfficialPackage(row.name)
     const classifiedPlugins = runtimePlugins.map(row => ({ ...row, official: isOfficialRow(row) }))
-    return { status: 'ok', profiles: await listProfiles(home), runtimePlugins: classifiedPlugins, runtimeInventoryComplete, runtime }
+    return { status: 'ok', profiles: await listProfiles(home), runtimePlugins: classifiedPlugins, runtimeInventoryComplete, runtime, exportRequestVersion: 2 }
   }
   if (action === 'create-profile') return createProfile(home, body, workspace)
   if (action === 'history') return { status: 'ok', history: await readHistory(workspace.history) }
@@ -700,14 +700,65 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: object[
     }
   }
 
+  if (action === 'export-catalog' || action === 'registry-versions') {
+    const profile = join(home, 'profiles', safeName(body.profileName, 'profileName'))
+    const args = ['export-catalog', '--profile', profile, '--json']
+    if (action === 'registry-versions') args.push('--package', safePluginName(body.packageName, 'packageName'))
+    const run = await runCore(home, args)
+    const result = parseCore(run.stdout)
+    return { status: run.code === 0 ? 'ok' : 'failed', result,
+      ...(run.code ? { error: coreDiagnostic(result, 'Registry or inventory request failed') } : {}) }
+  }
+
   if (action === 'export' || action === 'export-plan') {
     const profileName = safeName(body.profileName, 'profileName')
     const profile = join(home, 'profiles', profileName)
     const profileRelative = relative(join(home, 'profiles'), resolve(profile))
     if (!profileRelative || profileRelative.startsWith('..') || profileRelative.includes('\\')) throw new Error('profileName escaped DSH_HOME')
+    // Only remove our own expired flat snapshot files; never recurse.
+    for (const entry of await readdir(workspace.work, { withFileTypes: true })) {
+      if (!entry.isFile() || !/^export-plan-[0-9a-f-]{36}\\.(json(?:\\.used)?|dshcrate)$/.test(entry.name)) continue
+      const file = join(workspace.work, entry.name)
+      const info = await stat(file).catch(() => undefined)
+      if (info && Date.now() - info.mtimeMs > 20 * 60 * 1000) await rm(file, { force: true })
+    }
+    const versioned = body.requestVersion === 2
+    if (body.requestVersion !== undefined && !versioned) throw new Error('Unsupported export request version')
+    if (!versioned && (body.plugins !== undefined || body.compression !== undefined)) throw new Error('Export selections require requestVersion 2')
+    const draft = { ...body }
+    delete draft.action; delete draft.planId; delete draft.confirmReferences
+    const fingerprint = createHash('sha256').update(JSON.stringify(draft)).digest('hex')
+    if (versioned && action === 'export') {
+      if (typeof body.planId !== 'string' || !SAFE_OPERATION_ID.test(body.planId)) throw new Error('Preview this selection before exporting')
+      const planPath = join(workspace.work, 'export-plan-' + body.planId + '.json')
+      const saved = JSON.parse(await readFile(planPath, 'utf8'))
+      if (saved.fingerprint !== fingerprint || Date.now() > saved.expires) throw new Error('Export preview expired or selection changed; preview again')
+      if (saved.references > 0 && body.confirmReferences !== true) throw new Error('Reference export confirmation is required')
+      const frozen = join(workspace.work, 'export-plan-' + body.planId + '.dshcrate')
+      const bytes = await readFile(frozen)
+      if (createHash('sha256').update(bytes).digest('hex') !== saved.sha256) throw new Error('Frozen export integrity mismatch')
+      const claim = planPath + '.used'
+      await rename(planPath, claim)
+      const outputName = profileName + '-' + randomUUID() + '.dshcrate'
+      try {
+        await copyFile(frozen, join(workspace.exports, outputName))
+      } catch (error) {
+        await rm(join(workspace.exports, outputName), { force: true })
+        await rename(claim, planPath)
+        throw error
+      }
+      await Promise.all([rm(claim, { force: true }), rm(frozen, { force: true })])
+      const item = await record(workspace.history, { time: new Date().toISOString(), action, status: 'PASS', profile: profileName, pack: outputName })
+      return { status: 'ok', command: action, result: { ...saved.result, status: 'exported' }, downloadName: outputName, history: item }
+    }
+    const planId = versioned ? randomUUID() : undefined
     const outputName = `${profileName}-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}.dshcrate`
-    const args = ['export', '--profile', profile, '--output', join(workspace.exports, outputName), '--json', ...runtimeCoreArgs()]
+    const args = ['export', '--profile', profile, '--output', (planId ? join(workspace.work, 'export-plan-' + planId + '.dshcrate') : join(workspace.exports, outputName)), '--json', ...runtimeCoreArgs()]
     if (action === 'export-plan') args.push('--plan-only')
+    if (versioned) {
+      if (!Array.isArray(body.plugins) || !['fast', 'compact'].includes(String(body.compression))) throw new Error('Invalid export draft')
+      args.push('--compression', String(body.compression), '--freeze-preview')
+    }
     if (typeof body.preset === 'string') args.push('--preset', body.preset)
     if (body.includeInstalledBundles === true) args.push('--include-installed-bundles')
     const embed = Array.isArray(body.embed) ? body.embed : []
@@ -720,6 +771,12 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: object[
       if (typeof name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error('requiredSecrets accepts environment variable names only; never supply Secret values')
       args.push('--required-secret', name)
     }
+    let pluginSelectionPath: string | undefined
+    if (versioned) {
+      pluginSelectionPath = join(workspace.work, 'plugins-' + randomUUID() + '.json')
+      await writeFile(pluginSelectionPath, JSON.stringify(body.plugins), { encoding: 'utf8', flag: 'wx' })
+      args.push('--plugin-selection-json', pluginSelectionPath)
+    }
     let selectionPath: string | undefined
     if (body.dataSelection !== undefined) {
       if (!Array.isArray(body.dataSelection)) throw new Error('dataSelection must be an array')
@@ -729,10 +786,22 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: object[
     }
     const run = await runCore(home, args).finally(async () => {
       if (selectionPath) await rm(selectionPath, { force: true })
+      if (pluginSelectionPath) await rm(pluginSelectionPath, { force: true })
     })
     let result: unknown
     try { result = parseCore(run.stdout) } catch { result = undefined }
     if (action === 'export-plan') {
+      if (planId && run.code === 0 && isObject(result)) {
+        const frozen = join(workspace.work, 'export-plan-' + planId + '.dshcrate')
+        const bytes = await readFile(frozen)
+        const completeness = isObject(result.completeness) ? result.completeness : {}
+        await writeFile(join(workspace.work, 'export-plan-' + planId + '.json'), JSON.stringify({
+          fingerprint, expires: Date.now() + 15 * 60 * 1000,
+          sha256: createHash('sha256').update(bytes).digest('hex'),
+          references: Array.isArray(completeness.referenceOnly) ? completeness.referenceOnly.length : 0, result,
+        }), { flag: 'wx' })
+        result = { ...result, planId }
+      }
       return { status: run.code === 0 ? 'ok' : 'failed', command: action, exitCode: run.code, result,
         ...(run.code === 0 ? {} : { error: coreDiagnostic(result, run.stderr || 'Export preview failed') }) }
     }

@@ -86,6 +86,8 @@ class ExportOptions:
     include_installation_bundles: bool = False
     export_mode: str = "custom"
     data_selection: tuple[Mapping[str, Any], ...] = ()
+    compression: str | None = None
+    selections: tuple[Mapping[str, Any], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -94,6 +96,7 @@ class ExportResult:
 
     path: Path
     data: PackData
+    plan: dict[str, Any] = field(default_factory=dict)
 
 
 
@@ -642,29 +645,38 @@ def _npm_pack(
             str(cache_directory),
         ]
         environment = None
+        if isinstance(npm_command, str) and npm_command.lower().endswith(".cmd"):
+            root = Path(npm_command).parent
+            cli, node = root / "node_modules/npm/bin/npm-cli.js", root / "node.exe"
+            if cli.is_file() and node.is_file():
+                command = [str(node), str(cli), *command[1:]]
         if is_pnpm:
             command = [*npm_command, "pack", "--pack-destination", directory,
                        "--skip-manifest-obfuscation", "--config.ignore-scripts=true",
                        "--config.ignore-pnpmfile=true", "--config.offline=true",
                        "--config.pm-on-fail=ignore", "--config.runtime-on-fail=ignore"]
             environment = dict(os.environ, ELECTRON_RUN_AS_NODE="1")
+        # Windows CreateProcess rejects a long cwd even when the package exists.
+        # npm already receives the absolute package path; keep normal cwd semantics
+        # unless the Windows path limit is reached. pnpm packs its cwd directly.
+        pack_cwd = Path(directory) if os.name == "nt" and not is_pnpm and len(str(package_dir)) >= 260 else package_dir
         try:
             completed = subprocess.run(
-                command, cwd=package_dir, capture_output=True, text=True,
+                command, cwd=pack_cwd, capture_output=True, text=True,
                 check=False, timeout=120, **({"env": environment} if environment is not None else {}),
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise ExportError(
                 f"Cannot pack {package_name}: {error}. Install npm or use the desktop-provided pnpm entry.",
                 stage="package-artifact", code="EXPORT_PACK_START_FAILED",
-                details={"package": package_name, "command": command, "cwd": str(package_dir), "originalError": str(error)},
+                details={"package": package_name, "command": command, "cwd": str(pack_cwd), "packageDirectory": str(package_dir), "originalError": str(error)},
             ) from error
         if completed.returncode != 0:
             raise ExportError(
                 f"npm pack failed for {package_name} with exit code {completed.returncode}: "
                 f"{completed.stderr.strip() or completed.stdout.strip()}",
                 stage="package-artifact", code="EXPORT_PACK_FAILED",
-                details={"package": package_name, "command": command, "cwd": str(package_dir),
+                details={"package": package_name, "command": command, "cwd": str(pack_cwd), "packageDirectory": str(package_dir),
                          "exitCode": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr},
             )
         tarballs = sorted(Path(directory).glob("*.tgz"))
@@ -821,9 +833,10 @@ def export_profile(
         installed_names = set()
     plugin_names = list(bundles)
     plugin_names.extend(name for name in dependencies if name not in plugin_names)
-    if not plugin_names:
+    if not plugin_names and options.selections is None:
         raise ExportError("Profile has no dependencies or dsh.profile.bundles")
-    _assert_no_duplicate_loader_rows(profile_dir, bundles)
+    if options.selections is None:
+        _assert_no_duplicate_loader_rows(profile_dir, bundles)
 
     unknown_options = set(plugin_options) - set(plugin_names) - installed_names
     if unknown_options:
@@ -833,19 +846,44 @@ def export_profile(
     profile_files = _profile_files(profile_dir, destination_path)
     if options.include_installation_bundles:
         _with_bundle_composition(profile_files, bundles)
+    effective = None
+    remote = {}
+    if options.selections is not None:
+        from .export_selection import resolve
+        plugin_names, bundles, dependencies, plugin_options, packages, remote, excluded = resolve(
+            profile_dir, options, dependencies, bundles, profile_files)
+        effective = (plugin_names, bundles, packages, plugin_options, excluded)
     plugins: list[dict[str, Any]] = []
     artifacts: dict[str, bytes] = {}
     for package_name in plugin_names:
         specifier = dependencies.get(package_name, "unknown")
         selected = plugin_options.get(package_name, PluginExportOptions(mode=EMBEDDED if options.export_mode == "freeze" else REFERENCE_ONLY))
-        entry, package_artifacts = _plugin_lock_entry(
-            profile_dir,
-            package_name,
-            specifier,
-            bundles.index(package_name) if package_name in bundles else None,
-            selected,
-            npm_command,
-        )
+        if package_name in remote:
+            content, integrity, source_url = remote[package_name]
+            package = packages[package_name]
+            version = package["version"]
+            patch = package.get("dsh", {}).get("bundle", {}).get("patch")
+            filename = _artifact_name(package_name, version)
+            entry = {"name": package_name, "required": selected.required,
+                     "requested": {"specifier": source_url, "sourceType": "tarball"},
+                     "resolved": {"version": version, "locator": source_url, "integrity": integrity},
+                     "runtime": {"version": "unknown", "source": "unknown", "entry": package_name},
+                     "bundle": {"enabled": package_name in bundles, "order": bundles.index(package_name) if package_name in bundles else None,
+                                "patch": patch if package_name in bundles else None},
+                     "artifact": {"mode": selected.mode}}
+            package_artifacts = {}
+            if selected.mode == EMBEDDED:
+                entry["artifact"].update(path="plugins/" + filename, sha256=sha256_bytes(content))
+                package_artifacts[filename] = content
+        else:
+            entry, package_artifacts = _plugin_lock_entry(
+                profile_dir,
+                package_name,
+                specifier,
+                bundles.index(package_name) if package_name in bundles else None,
+                selected,
+                npm_command,
+            )
         plugins.append(entry)
         for artifact_name, content in package_artifacts.items():
             if artifact_name in artifacts:
@@ -864,7 +902,13 @@ def export_profile(
     from .export_plan import build_plan
     from .portability import collect
     user_data, portable_items = collect(profile_dir, options.data_selection, set(plugin_names))
-    plan = build_plan(profile_dir, options=options, portable_items=portable_items)
+    plan = build_plan(profile_dir, options=options, portable_items=portable_items, effective=effective)
+    plan["compression"] = options.compression or "legacy"
+    plan["referencePlugins"] = [
+        {"name": p["name"], "version": p["resolved"]["version"] if p["resolved"]["version"] != "unknown" else p["runtime"]["version"],
+         "sourceType": p["requested"]["sourceType"]}
+        for p in plugins if p["artifact"]["mode"] == REFERENCE_ONLY
+    ]
     multiple_patches = any(isinstance(plugin["bundle"]["patch"], list) for plugin in plugins)
     manifest.update({"schemaVersion": 3 if multiple_patches else 2, "exportMode": options.export_mode,
                      "dataInventory": plan["dataInventory"], "completeness": plan["completeness"]})
@@ -876,8 +920,8 @@ def export_profile(
         plugin_artifacts=artifacts,
     )
     destination_path.parent.mkdir(parents=True, exist_ok=True)
-    created = create(data, destination_path)
-    return ExportResult(path=created, data=data)
+    created = create(data, destination_path, compression=options.compression)
+    return ExportResult(path=created, data=data, plan=plan)
 
 
 def _load_environment(args: argparse.Namespace) -> dict[str, Any]:

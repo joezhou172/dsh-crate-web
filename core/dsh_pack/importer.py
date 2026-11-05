@@ -1181,6 +1181,21 @@ def _cleanup_empty(path: Path | None) -> None:
         path.rmdir()
 
 
+def _commit_prepared_profile(source: Path, target: Path) -> None:
+    """Allow a short Windows sharing delay without replacing an existing Profile."""
+    import time
+    for attempt in range(5):
+        if target.exists():
+            raise PackImportError("target Profile appeared during Import", stage="commit", code="PROFILE_EXISTS")
+        try:
+            source.rename(target)
+            return
+        except PermissionError as error:
+            if getattr(error, "winerror", None) not in {5, 32} or attempt == 4:
+                raise
+            time.sleep(0.1 * (2 ** attempt))
+
+
 def import_pack(
     source: str | os.PathLike[str],
     dsh_home: str | os.PathLike[str],
@@ -1381,7 +1396,7 @@ def import_pack(
                 )
             original_metadata_backup = metadata_parent / f".{plan.profile_name}.dsh-pack-backup-{backup_token}"
             plan.metadata_path.rename(original_metadata_backup)
-        temp_profile.rename(final_profile)
+        _commit_prepared_profile(temp_profile, final_profile)
         temp_profile = None
         final_created = True
 

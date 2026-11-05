@@ -81,7 +81,7 @@ class Phase6UiContractTests(unittest.TestCase):
                 self.assertNotIn(expression, self.client)
 
     def test_export_defaults_to_embedded_for_importable_packs(self) -> None:
-        self.assertIn("modes[name] ?? 'embedded'", self.client)
+        self.assertIn("artifactMode: 'embedded'", self.client)
 
     def test_installed_bundle_inventory_is_separate_from_active_export_plugins(self) -> None:
         for marker in ("listInstalledBundles", "installedBundles", "installation-anchor"):
@@ -89,7 +89,8 @@ class Phase6UiContractTests(unittest.TestCase):
                 self.assertIn(marker, self.host)
         self.assertIn("installedBundles", self.client)
         self.assertIn("active", self.client)
-        self.assertIn("includeInstalledBundles", self.client)
+        self.assertIn("export-catalog", self.client)
+        self.assertIn("requestVersion: 2", self.client)
         self.assertIn("include-installed-bundles", self.host)
         self.assertNotIn("selectedProfile?.plugins", self.client)
 

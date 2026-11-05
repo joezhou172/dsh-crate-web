@@ -126,23 +126,27 @@ def validate_manifest(value: Any, *, require_integrity: bool = False) -> dict[st
     manifest = _object(value, "manifest")
     # Report an unsupported schema before checking version-specific required
     # fields, so a future schema cannot be misdiagnosed as a malformed v1 Pack.
-    if "schemaVersion" in manifest and (type(manifest["schemaVersion"]) is not int or manifest["schemaVersion"] not in {1, 2, 3}):
+    if "schemaVersion" in manifest and (type(manifest["schemaVersion"]) is not int or manifest["schemaVersion"] not in {1, 2, 3, 4}):
         raise SchemaValidationError(
             f"unsupported manifest.schemaVersion: {manifest['schemaVersion']!r}; expected {SCHEMA_VERSION}"
         )
     allowed = {"schemaVersion", "format", "packVersion", "profile", "environment", "requiredSecrets", "integrity"}
-    if manifest.get("schemaVersion") in {2, 3}:
+    if manifest.get("schemaVersion") in {2, 3, 4}:
         _validate_completeness(manifest.get("completeness"))
         if not isinstance(manifest.get("dataInventory"), list):
             raise SchemaValidationError("schema 2 requires dataInventory")
         allowed.update({"exportMode", "dataInventory", "completeness"})
         if not isinstance(manifest.get("exportMode"), str) or manifest["exportMode"] not in {"share", "freeze", "custom"}:
             raise SchemaValidationError("schema 2 requires exportMode")
+    if manifest.get("schemaVersion") == 4:
+        from .compression import validate_transport
+        validate_transport(manifest.get("transport"))
+        allowed.add("transport")
     required = {"schemaVersion", "format", "packVersion", "profile", "environment"}
     if require_integrity:
         required.add("integrity")
     _strict_keys(manifest, allowed, required, "manifest")
-    if manifest["schemaVersion"] not in {1, 2, 3}:
+    if manifest["schemaVersion"] not in {1, 2, 3, 4}:
         raise SchemaValidationError(
             f"unsupported manifest.schemaVersion: {manifest['schemaVersion']!r}; expected {SCHEMA_VERSION}"
         )
@@ -255,7 +259,7 @@ def bundle_patch_paths(value: Any) -> tuple[str, ...]:
 
 
 def validate_format_pair(manifest: Mapping[str, Any], lock: Mapping[str, Any]) -> None:
-    if lock.get("schemaVersion") == 2 and manifest.get("schemaVersion") != 3:
+    if lock.get("schemaVersion") == 2 and manifest.get("schemaVersion") not in {3, 4}:
         raise SchemaValidationError("ordered Bundle patch arrays require manifest schema 3 and plugins.lock schema 2")
 
 

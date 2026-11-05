@@ -4,19 +4,31 @@ DSH Crate 把 DeepSeek Harness 的一套 Profile 配置导出为 `.dshcrate`，�
 
 它是第三方社区项目。目前提供 **Preview** 版本，兼容范围以实际测试的组合为准。
 
-截至 2026 年 10 月 31 日，npm 的 `preview` 是 **`0.1.2-preview.6`**，`latest` 仍是 `0.1.1`。使用新版时请指定版本。
+本轮发布候选为 **`0.1.2-preview.7`**，使用 `preview` 通道。迁移测试请固定安装此版本；发布状态以 npm 实际查询结果为准。
 
 ## 安装与开始使用
 
 通过 DSH 自带的插件命令安装。下面以 `web` 为例，请换成你实际使用的 Profile 名称：
 
 ```powershell
-dsh plugin --profile web add dsh-crate-web@0.1.2-preview.6
+dsh plugin --profile web add dsh-crate-web@0.1.2-preview.7
 ```
 
 重启 DSH，进入 **Settings → DSH Crate**。Windows x64 包内带有 Python 3.14.6，无需另装系统 Python。离线安装可以使用同版本 tgz，但恢复时是否还需联网，取决于包内有没有包含所需插件制品。
 
 插件需要安装到目标 DSH Profile。全局安装 npm 包不能替代这一步；DSH 模块和 React 由宿主提供，Crate 不会为一个空目录自动装上另一套 DSH。
+
+## Preview.7 的迁移功能
+
+- 导出前生成实际包并显示体积；新界面使用有效期 15 分钟的冻结计划，最终下载同一文件。修改选项后需重新预览。
+- 独立插件选择页与运行插件页，支持搜索、选择状态和来源筛选；选择只影响导出包。
+- 选择已安装内容或公共 npm 的精确版本；可以把插件加入包而不安装到当前环境。
+- 内嵌与仅引用两种导出方式；仅引用需要明确确认，恢复仍依赖制品来源。
+- 快速模式使用 ZSTD 9，紧实模式使用 ZSTD 19。新导出使用 schema 4；仍可读取旧 schema 1–3，旧版 Crate 不保证能读取 schema 4，请先升级接收端。
+- 界面跟随 DSH 的中文/英文和官方深浅色；完整错误放入可复制诊断弹窗。
+- 修复 Windows npm 打包时，过长包目录作为工作目录引发的 WinError 267。
+
+本机真实测试覆盖 DSH 0.2.1-rc.5、Node 24.21.0：两档导出/恢复、重启、核心文件/搜索/PowerShell 工具和部分插件本地数据能力。完整模型业务与 Win10 目标机器尚未验收。`@howmp/dsh-pentest@0.1.0-rc.34` 的渗透预设因旧 `persona` 配置加载失败，是已知第三方兼容问题；打包恢复成功不等于该插件功能兼容。
 
 ## 一次迁移会经过哪些步骤
 

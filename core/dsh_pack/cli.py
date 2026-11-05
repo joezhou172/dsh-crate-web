@@ -127,8 +127,40 @@ def _export_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParse
     parser.add_argument("--data-selection-json", help="JSON array of explicitly selected data paths, kinds and owners")
     parser.add_argument("--plan-only", action="store_true", help="preview export contents without writing a Crate")
     parser.add_argument("--required-secret", action="append", default=[], metavar="NAME", help="record one required Secret name")
+    parser.add_argument("--compression", choices=("fast", "compact"))
+    parser.add_argument("--plugin-selection-json")
+    parser.add_argument("--freeze-preview", action="store_true")
     parser.set_defaults(handler=_run_export)
 
+
+def _catalog_parser(subparsers):
+    parser = subparsers.add_parser("export-catalog")
+    parser.add_argument("--profile", required=True)
+    parser.add_argument("--package")
+    parser.add_argument("--json", action="store_true")
+    parser.set_defaults(handler=_run_catalog)
+
+def _run_catalog(args):
+    try:
+        from .export import _read_json_file, _profile_dependencies, _profile_bundles, _installed_package
+        profile = Path(args.profile).resolve()
+        if args.package:
+            from .registry import versions
+            payload = versions(profile, args.package)
+        else:
+            manifest = _read_json_file(profile / "package.json", "Profile")
+            dependencies, bundles = _profile_dependencies(manifest), _profile_bundles(manifest)
+            items = []
+            for name in dict.fromkeys([*bundles, *dependencies]):
+                _, package = _installed_package(profile, name, bundle=name in bundles)
+                items.append({"name": name, "version": package.get("version", "unknown"),
+                              "active": name in bundles, "official": name.startswith("@deepseek-ai/")})
+            payload = {"plugins": items, "requestVersion": 2}
+        _emit(payload, args.command)
+        return 0
+    except (DshPackError, OSError, ValueError) as error:
+        _emit({"status": "failed", "error": {"message": str(error)}}, args.command)
+        return 2
 
 def _reference_sources(values: list[str]) -> dict[str, Path]:
     sources: dict[str, Path] = {}
@@ -237,6 +269,8 @@ def _run_export(args: argparse.Namespace) -> int:
     try:
         options = ExportOptions(
                 environment=_export_environment(args),
+                compression=args.compression,
+                selections=tuple(json.loads(Path(args.plugin_selection_json).read_text(encoding="utf-8"))) if args.plugin_selection_json else None,
                 required_secrets=tuple(args.required_secret),
                 plugin_options=plugin_options,
                 include_installation_bundles=args.include_installed_bundles,
@@ -244,8 +278,8 @@ def _run_export(args: argparse.Namespace) -> int:
                 data_selection=tuple(json.loads(Path(args.data_selection_json).read_text(encoding="utf-8"))) if args.data_selection_json else (),
             )
         if args.plan_only:
-            from .export_plan import build_plan
-            payload = build_plan(Path(args.profile), options=options)
+            from .size_preview import build_preview
+            payload = build_preview(Path(args.profile), options=options, frozen_output=Path(args.output) if args.freeze_preview else None)
             _emit(payload, args.command)
             return 0
         result = export_profile(args.profile, args.output, options=options)
@@ -426,6 +460,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     _inspect_parser(subparsers)
     _export_parser(subparsers)
+    _catalog_parser(subparsers)
     _import_parser(subparsers)
     _delete_parser(subparsers)
     _verify_parser(subparsers)

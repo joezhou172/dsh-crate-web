@@ -41,4 +41,106 @@ export const DESIGN_STYLE = `
 .dsh-crate-modal-backdrop{background:var(--dsw-alias-bg-mask-1);backdrop-filter:var(--dsw-mask-blur)}
 .dsh-crate-section :focus-visible{outline-color:var(--dsw-alias-brand-primary)}
 @media(max-width:600px){.dsh-crate-section{gap:18px}.dsh-crate-header{align-items:flex-start;gap:8px}.dsh-crate-brand{gap:10px}.dsh-crate-heading{font-size:20px}.dsh-crate-intro{font-size:12px}.dsh-crate-brand>.dsh-crate-icon{width:24px;height:24px}.dsh-crate-manage{font-size:12px;padding:4px 0;min-height:44px}.dsh-crate-tabs{gap:20px}.dsh-crate-form{gap:18px}.dsh-crate-environment{flex-wrap:wrap;gap:6px}.dsh-crate-environment>.dsh-crate-label{flex-basis:100%}.dsh-crate-running{min-height:24px}.dsh-crate-export-actions{gap:10px}.dsh-crate-export-actions>button{flex:1}.dsh-crate-export-actions>.dsh-crate-muted{flex-basis:100%}.dsh-crate-report-dialog{padding:20px}.dsh-crate-report-dialog h3{font-size:16px}.dsh-crate-dialog-actions{flex-direction:column}.dsh-crate-recipient{flex-wrap:wrap}.dsh-crate-recipient strong{flex-basis:100%}.dsh-crate-report-dialog pre{max-height:32dvh;min-height:100px}.dsh-crate-select,.dsh-crate-file{font-size:16px}}
+
+/* Crate 主页与二级页共用宿主 options 滚动区域，不给列表另设滚动框。 */
+.dsh-crate-section{flex-shrink:0;overflow:visible}
+.dsh-crate-page{display:flex;flex-direction:column;gap:24px;min-width:0;overflow:visible}
+.dsh-crate-subpage-header{display:flex;align-items:flex-start;flex-wrap:wrap;gap:16px}
+.dsh-crate-subpage-header .dsh-crate-muted{margin-top:4px}
+.dsh-crate-page-links{display:flex;flex-direction:column;border:1px solid var(--crate-border);border-radius:10px;overflow:hidden}
+.dsh-crate-page-link{display:flex;align-items:center;gap:12px;width:100%;min-height:60px;padding:14px 16px;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.dsh-crate-page-link+*{border-top:1px solid var(--crate-border)}
+.dsh-crate-page-link>span:first-child{flex:1;min-width:0;overflow-wrap:anywhere}
+.dsh-crate-page-link>span:last-child{font-size:22px;color:var(--crate-muted)}
+.dsh-crate-page-link:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dsh-crate-page-link:disabled{opacity:.4;cursor:not-allowed}
+[data-dsh-module=settings]:has(.dsh-crate-section)>div:last-child{min-height:0}
+[data-dsh-module=settings]:has(.dsh-crate-section)>div:last-child>div:last-child{overflow-y:auto;min-height:0}
+@media(max-width:600px){.dsh-crate-page{gap:18px}.dsh-crate-subpage-header{gap:12px}}
+
+.dsh-crate-runtime-choice{display:flex;align-items:center;gap:8px;min-height:44px;cursor:pointer}
+[data-field="runtimePlugin"]{flex-wrap:wrap;gap:8px 16px}
+
+/* 所有页面共用排版层级；次要操作不与标题和主要动作争夺视觉重心。 */
+.dsh-crate-section{font-size:14px;line-height:1.5}
+.dsh-crate-page{gap:20px}
+.dsh-crate-header{align-items:flex-start;gap:16px}
+.dsh-crate-heading{font-size:21px;letter-spacing:-.3px}
+.dsh-crate-brand{gap:10px}.dsh-crate-brand>.dsh-crate-icon{width:24px;height:24px}
+.dsh-crate-manage{font-size:13px;color:var(--dsw-alias-label-secondary);padding:0 8px;min-height:36px}
+.dsh-crate-tabs{gap:24px;min-height:44px}.dsh-crate-tab{font-size:14px;border-bottom-width:2px;padding:8px 0 10px}.dsh-crate-tab[data-active=true]{border-bottom-width:2px}
+.dsh-crate-form{gap:18px}.dsh-crate-section-title{font-size:18px;font-weight:600;line-height:1.5}
+.dsh-crate-label{font-size:13px;color:var(--dsw-alias-label-secondary)}
+.dsh-crate-select,.dsh-crate-file{color:var(--dsw-alias-label-primary);min-height:36px;font-size:14px}
+.dsh-crate-page-link{min-height:52px;padding:12px 14px;font-size:14px}
+.dsh-crate-count{background:transparent;color:var(--crate-muted);padding:0;font-variant-numeric:tabular-nums}
+.dsh-crate-running{min-height:36px;font-size:12px;gap:6px}
+.dsh-crate-export-actions{padding-top:16px;margin-top:0;gap:10px}
+.dsh-crate-section .dsh-crate-button:disabled{background:transparent;color:var(--crate-muted);border:1px solid var(--crate-border);opacity:1}
+.dsh-crate-subpage-header{flex-direction:column;gap:12px}
+.dsh-crate-text-button{border:0;background:transparent;color:var(--dsw-alias-label-secondary);padding:6px 8px;min-height:36px;font-size:13px;border-radius:8px}
+.dsh-crate-subpage-header>.dsh-crate-text-button{margin-left:-8px}
+.dsh-crate-subpage-header .dsh-crate-muted{margin:2px 0 0;font-size:13px}
+.dsh-crate-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.dsh-crate-selection{border:0;padding:0;border-radius:0;gap:12px;font-size:14px}
+.dsh-crate-selection>strong{font-size:13px;font-weight:500;color:var(--dsw-alias-label-secondary)}
+.dsh-crate-selection>p{margin:0;font-size:13px}
+.dsh-crate-selection>.dsh-crate-choice-controls{display:flex;gap:8px;padding-bottom:8px}
+.dsh-crate-selection>.dsh-crate-choice-controls>input{flex:1;min-width:0}
+.dsh-crate-choice{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 0;margin:0;border-bottom:1px solid var(--crate-border)}
+.dsh-crate-choice-name{display:flex;align-items:center;gap:12px;min-width:0;flex:1;cursor:pointer}
+.dsh-crate-plugin-copy{display:flex;flex-direction:column;gap:4px;min-width:0;overflow-wrap:anywhere}
+.dsh-crate-plugin-copy strong{font-size:14px;font-weight:500}.dsh-crate-plugin-copy>.dsh-crate-muted{font-size:12px}
+.dsh-crate-choice>.dsh-crate-choice-controls{display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end;flex:none;max-width:48%}
+.dsh-crate-choice-controls select{font-size:13px;max-width:100%}
+.dsh-crate-section input[type=checkbox]{width:16px;height:16px;flex:none;margin:0;accent-color:var(--crate-accent)}
+[data-field=runtimePlugin]{display:grid;grid-template-columns:20px minmax(0,1fr) auto;align-items:center;justify-content:initial;gap:12px;padding:12px 0;font-size:13px}
+.dsh-crate-runtime-choice{min-height:36px;min-width:20px}
+.dsh-crate-sr-only{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.dsh-crate-group-head{font-size:13px}
+@media(max-width:600px){
+.dsh-crate-page{gap:18px}.dsh-crate-choice{flex-wrap:wrap;gap:10px}.dsh-crate-choice-name{flex-basis:100%}
+.dsh-crate-choice>.dsh-crate-choice-controls{margin-left:28px;max-width:calc(100% - 28px);justify-content:flex-start}
+[data-field=runtimePlugin]{grid-template-columns:20px minmax(0,1fr)}
+[data-field=runtimePlugin]>.dsh-crate-muted{grid-column:2}
+.dsh-crate-selection>.dsh-crate-choice-controls{flex-wrap:wrap}
+.dsh-crate-select,.dsh-crate-file{font-size:16px}
+}
+
+.dsh-crate-file::file-selector-button{font:inherit;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover);border:0;border-radius:6px;padding:4px 10px;margin-right:10px;cursor:pointer}
+.dsh-crate-file::file-selector-button:hover{background:var(--dsw-alias-interactive-bg-active)}
+
+/* 与官方 PluginsSettingsSection、Button、Input 的实际样式对齐。 */
+.dsh-crate-section{font-family:inherit;font-synthesis:inherit;line-height:22px;font-weight:400;gap:14px}
+.dsh-crate-page{gap:14px}.dsh-crate-form{gap:14px}
+.dsh-crate-heading,.dsh-crate-section-title{font-size:18px;line-height:26px;font-weight:600;letter-spacing:normal}
+.dsh-crate-brand>.dsh-crate-icon{display:none}
+.dsh-crate-header{padding:0;gap:12px}.dsh-crate-intro{font-size:13px;line-height:20px;margin-top:4px}
+.dsh-crate-tabs{gap:22px;min-height:0;margin-top:2px;align-items:flex-end}
+.dsh-crate-tab{font-size:13px;line-height:20px;padding:7px 1px 9px;min-height:36px;font-weight:400}
+.dsh-crate-tab[data-active=true]{font-weight:400}
+.dsh-crate-label{font-size:14px;line-height:22px;color:var(--dsw-alias-label-primary);gap:6px}
+.dsh-crate-file,.dsh-crate-select{min-height:32px;padding:4px 8px;font-size:14px;line-height:22px;border-radius:8px;background:var(--dsw-alias-bg-layer-1)}
+.dsh-crate-file::placeholder{color:var(--dsw-alias-label-dimmed)}
+.dsh-crate-button,.dsh-crate-secondary{min-height:36px;padding:7px 14px;border-radius:18px;font-size:14px;line-height:22px;font-weight:400;gap:4px}
+.dsh-crate-section .dsh-crate-button:disabled{background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground);border:0;opacity:.4}
+.dsh-crate-text-button{border:0;padding:7px 10px;background:transparent;color:var(--dsw-alias-label-primary);font-size:14px}
+.dsh-crate-subpage-header{gap:8px}.dsh-crate-subpage-header>.dsh-crate-text-button{margin-left:-10px}
+.dsh-crate-page-link{min-height:48px;padding:10px 12px}
+.dsh-crate-selection{gap:12px}.dsh-crate-choice{padding:12px 0;gap:10px}
+.dsh-crate-choice-name{gap:10px}.dsh-crate-plugin-copy{gap:2px}
+.dsh-crate-plugin-copy strong{font-size:14px;line-height:22px;font-weight:500}
+.dsh-crate-plugin-copy>.dsh-crate-muted{font-size:13px;line-height:20px}
+.dsh-crate-choice>.dsh-crate-choice-controls{gap:4px}
+.dsh-crate-choice-controls .dsh-crate-text-button{min-height:28px;font-size:12px;line-height:18px;padding:5px 10px;border-radius:14px}
+[data-field=runtimePlugin]{padding:10px 0;gap:10px}
+.dsh-crate-toolbar{min-height:36px;font-size:13px}
+.dsh-crate-export-actions{padding-top:14px}
+@media(max-width:600px){.dsh-crate-page,.dsh-crate-form{gap:14px}.dsh-crate-choice>.dsh-crate-choice-controls{margin-left:26px}.dsh-crate-file,.dsh-crate-select{font-size:16px}}
+
+.dsh-crate-filters{display:flex;flex-direction:column;gap:8px;min-width:0}
+.dsh-crate-filter-options{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.dsh-crate-filter-options select{flex:1;min-width:130px}
+.dsh-crate-filters>input{width:100%}
+.dsh-crate-filters [role=status]{font-size:12px;line-height:18px}
 `
