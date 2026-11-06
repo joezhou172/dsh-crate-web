@@ -142,6 +142,7 @@ class PreflightContext:
     available_plugins: Mapping[str, str | None] | None = None
     allow_network_reference_install: bool = False
     verified_local_plugins: Mapping[str, str] = field(default_factory=dict)
+    allow_environment_difference: bool = False
 
 
 @dataclass
@@ -393,6 +394,19 @@ def inspect_pack(
     except DshPackError as error:
         findings.append(_finding("BLOCKER", "SCHEMA_ERROR", str(error)))
 
+    wire_entries = entries
+    if manifest.get("schemaVersion") == 4:
+        try:
+            from .pack import _verify_integrity
+            from .compression import decode
+            validate_manifest(manifest, require_integrity=True)
+            validate_plugins_lock(lock)
+            _verify_integrity(manifest, entries)
+            decoded = decode(entries, manifest["transport"], lock)
+            entries = {k: v for k, v in entries.items() if not k.startswith("plugins/")}
+            entries.update({"plugins/" + k: v for k, v in decoded.items()})
+        except DshPackError as error:
+            return _empty_result(source_path, [_error_finding(error)])
     raw_plugins = lock.get("plugins", [])
     if not isinstance(raw_plugins, list):
         raw_plugins = []
@@ -483,7 +497,7 @@ def inspect_pack(
     integrity = manifest.get("integrity")
     if isinstance(integrity, Mapping) and isinstance(integrity.get("files"), Mapping):
         declared = dict(integrity["files"])
-        actual = set(entries) - {"manifest.json"}
+        actual = set(wire_entries) - {"manifest.json"}
         missing = set(declared) - actual
         unexpected = actual - set(declared)
         plugin_artifact_paths = set(artifact_paths)
@@ -499,9 +513,9 @@ def inspect_pack(
                 )
             )
         for name, expected in declared.items():
-            if name not in entries:
+            if name not in wire_entries:
                 continue
-            actual_hash = sha256_bytes(entries[name])
+            actual_hash = sha256_bytes(wire_entries[name])
             if actual_hash != expected:
                 hash_mismatch_paths.add(name)
                 plugin = artifact_paths.get(name)
@@ -601,7 +615,7 @@ def inspect_pack(
             if not _version_matches(required, current):
                 findings.append(
                     _finding(
-                        "BLOCKER",
+                        "WARNING" if context.allow_environment_difference else "BLOCKER",
                         "ENVIRONMENT_VERSION_MISMATCH",
                         f"Pack requires {label} {required}; current is {current}",
                         stage="environment",

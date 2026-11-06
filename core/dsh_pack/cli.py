@@ -83,19 +83,22 @@ def _context(args: argparse.Namespace) -> PreflightContext:
             if value
         }
     available_plugins = None
-    if args.check_reference_plugins or args.plugin:
-        available_plugins = _plugin_inventory(args.plugin)
+    if getattr(args, 'check_reference_plugins', False) or getattr(args, 'plugin', []):
+        available_plugins = _plugin_inventory(getattr(args, 'plugin', []))
     return PreflightContext(
         current_environment=environment,
         available_secrets=None if not args.no_process_secrets else set(),
         available_plugins=available_plugins,
         allow_network_reference_install=getattr(args, "allow_network_reference_install", False),
+        allow_environment_difference=getattr(args, 'allow_environment_difference', False),
     )
 
 
 def _inspect_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     parser = subparsers.add_parser("inspect", help="read-only Pack preflight")
+    parser.add_argument('--compatibility-policy', choices=('compatible', 'strict'), default='compatible')
     parser.add_argument("pack", help="input .dshcrate")
+    parser.add_argument("--adapt-host", action="store_true", help="adapt supported DSH versions using verified target host artifacts")
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     parser.add_argument("--dsh-version", help="current DSH version")
     parser.add_argument("--node-version", help="current Node version")
@@ -127,8 +130,40 @@ def _export_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParse
     parser.add_argument("--data-selection-json", help="JSON array of explicitly selected data paths, kinds and owners")
     parser.add_argument("--plan-only", action="store_true", help="preview export contents without writing a Crate")
     parser.add_argument("--required-secret", action="append", default=[], metavar="NAME", help="record one required Secret name")
+    parser.add_argument("--compression", choices=("fast", "compact"))
+    parser.add_argument("--plugin-selection-json")
+    parser.add_argument("--freeze-preview", action="store_true")
     parser.set_defaults(handler=_run_export)
 
+
+def _catalog_parser(subparsers):
+    parser = subparsers.add_parser("export-catalog")
+    parser.add_argument("--profile", required=True)
+    parser.add_argument("--package")
+    parser.add_argument("--json", action="store_true")
+    parser.set_defaults(handler=_run_catalog)
+
+def _run_catalog(args):
+    try:
+        from .export import _read_json_file, _profile_dependencies, _profile_bundles, _installed_package
+        profile = Path(args.profile).resolve()
+        if args.package:
+            from .registry import versions
+            payload = versions(profile, args.package)
+        else:
+            manifest = _read_json_file(profile / "package.json", "Profile")
+            dependencies, bundles = _profile_dependencies(manifest), _profile_bundles(manifest)
+            items = []
+            for name in dict.fromkeys([*bundles, *dependencies]):
+                _, package = _installed_package(profile, name, bundle=name in bundles)
+                items.append({"name": name, "version": package.get("version", "unknown"),
+                              "active": name in bundles, "official": name.startswith("@deepseek-ai/")})
+            payload = {"plugins": items, "requestVersion": 2}
+        _emit(payload, args.command)
+        return 0
+    except (DshPackError, OSError, ValueError) as error:
+        _emit({"status": "failed", "error": {"message": str(error)}}, args.command)
+        return 2
 
 def _reference_sources(values: list[str]) -> dict[str, Path]:
     sources: dict[str, Path] = {}
@@ -144,7 +179,9 @@ def _reference_sources(values: list[str]) -> dict[str, Path]:
 
 def _import_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     parser = subparsers.add_parser("import", help="prepare a Pack as a new Profile")
+    parser.add_argument('--compatibility-policy', choices=('compatible', 'strict'), default='compatible')
     parser.add_argument("pack", help="input .dshcrate")
+    parser.add_argument("--adapt-host", action="store_true", help="adapt supported DSH versions using verified target host artifacts")
     parser.add_argument("--dsh-home", required=True, help="target isolated DSH_HOME")
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     parser.add_argument("--dsh-version", help="current DSH version")
@@ -157,6 +194,8 @@ def _import_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParse
     parser.add_argument("--target-profile", help="requested target Profile name; new imports refuse duplicate names")
     parser.add_argument("--overwrite", action="store_true", help="replace the selected existing Profile after explicit confirmation")
     parser.add_argument("--confirm-overwrite", action="store_true", help="confirm the destructive overwrite operation")
+    parser.add_argument("--incremental", choices=('add', 'update'))
+    parser.add_argument("--plan-token", help="confirmed incremental preview fingerprint")
     parser.add_argument(
         "--reference-plugin",
         action="append",
@@ -168,7 +207,39 @@ def _import_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParse
     parser.set_defaults(handler=_run_import)
 
 
+def _adapted_cli(args, callback):
+    from .compatibility import adapted_pack
+    try:
+        with adapted_pack(args.pack, args.dsh_version, _host_bundles_from_environment(), os.environ.get('DSH_PACK_RUNTIME_MODULES')) as (path, report):
+            adapted = argparse.Namespace(**vars(args))
+            adapted.pack, adapted.adapt_host, adapted.compatibility = path, False, report
+            return callback(adapted)
+    except (DshPackError, OSError, ValueError) as error:
+        _emit({"status": "failed", "error": error.as_dict() if isinstance(error, PackImportError) else {"message": str(error)}}, args.command)
+        return 1
+
+
+def _compatible_cli(args, callback):
+    from .partial_import import compatible_pack
+    try:
+        environment = _context(args).current_environment
+        with compatible_pack(args.pack, environment, _host_bundles_from_environment(), os.environ.get('DSH_PACK_RUNTIME_MODULES')) as (path, report):
+            adapted = argparse.Namespace(**vars(args))
+            adapted.pack, adapted.adapt_host = str(path), False
+            adapted.compatibility_policy = 'strict'
+            adapted.allow_environment_difference = True
+            adapted.partial_report = report
+            return callback(adapted)
+    except (DshPackError, OSError, ValueError) as error:
+        _emit({'status': 'failed', 'error': error.as_dict() if isinstance(error, (PackImportError, ExportError)) else {'message': str(error)}}, args.command)
+        return 1
+
+
 def _run_inspect(args: argparse.Namespace) -> int:
+    if getattr(args, 'compatibility_policy', 'strict') == 'compatible':
+        return _compatible_cli(args, _run_inspect)
+    if getattr(args, 'adapt_host', False):
+        return _adapted_cli(args, _run_inspect)
     context = _context(args)
     if args.secret:
         available = set() if context.available_secrets is not None else set()
@@ -182,10 +253,15 @@ def _run_inspect(args: argparse.Namespace) -> int:
             available_secrets=available,
             available_plugins=context.available_plugins,
             allow_network_reference_install=context.allow_network_reference_install,
+            allow_environment_difference=context.allow_environment_difference,
         )
     result = inspect_pack(args.pack, context=context)
     if args.json:
-        _emit(result.as_dict(), args.command)
+        from .partial_import import result_report
+        payload = {**result.as_dict(), "compatibility": getattr(args, 'compatibility', None)}
+        if hasattr(args, 'partial_report'):
+            payload = result_report(payload, args.partial_report)
+        _emit(payload, args.command)
     else:
         print(render_text(result))
     return 1 if result.blockers else 0
@@ -237,6 +313,8 @@ def _run_export(args: argparse.Namespace) -> int:
     try:
         options = ExportOptions(
                 environment=_export_environment(args),
+                compression=args.compression,
+                selections=tuple(json.loads(Path(args.plugin_selection_json).read_text(encoding="utf-8"))) if args.plugin_selection_json else None,
                 required_secrets=tuple(args.required_secret),
                 plugin_options=plugin_options,
                 include_installation_bundles=args.include_installed_bundles,
@@ -244,8 +322,8 @@ def _run_export(args: argparse.Namespace) -> int:
                 data_selection=tuple(json.loads(Path(args.data_selection_json).read_text(encoding="utf-8"))) if args.data_selection_json else (),
             )
         if args.plan_only:
-            from .export_plan import build_plan
-            payload = build_plan(Path(args.profile), options=options)
+            from .size_preview import build_preview
+            payload = build_preview(Path(args.profile), options=options, frozen_output=Path(args.output) if args.freeze_preview else None)
             _emit(payload, args.command)
             return 0
         result = export_profile(args.profile, args.output, options=options)
@@ -265,6 +343,10 @@ def _run_export(args: argparse.Namespace) -> int:
 
 
 def _run_import(args: argparse.Namespace) -> int:
+    if getattr(args, 'compatibility_policy', 'strict') == 'compatible':
+        return _compatible_cli(args, _run_import)
+    if getattr(args, 'adapt_host', False):
+        return _adapted_cli(args, _run_import)
     environment: dict[str, dict[str, str]] = {}
     for section, version in (("dsh", args.dsh_version), ("node", args.node_version)):
         if version:
@@ -280,6 +362,9 @@ def _run_import(args: argparse.Namespace) -> int:
     try:
         sources = _reference_sources(args.reference_plugin)
         options = ImportOptions(
+            allow_environment_difference=getattr(args, 'allow_environment_difference', False),
+            allow_partial_plugins=hasattr(args, 'partial_report'),
+            compatibility_report=getattr(args, 'partial_report', None),
             pnpm_command=_pnpm_command_from_environment(),
             host_bundles=_host_bundles_from_environment(),
             patch_adapter_command=_patch_adapter_from_environment(),
@@ -291,15 +376,35 @@ def _run_import(args: argparse.Namespace) -> int:
             overwrite_existing_profile=args.overwrite,
             overwrite_confirmation="OVERWRITE" if args.confirm_overwrite else None,
         )
+        if args.incremental:
+            import tempfile
+            from .incremental import locked_plan, locked_execute
+            if args.overwrite or not args.target_profile:
+                raise ValueError('增量模式需要指定已有环境，不能同时覆盖')
+            with tempfile.TemporaryDirectory(prefix='dsh-crate-incremental-') as directory:
+                if args.plan_only:
+                    preview, _, _ = locked_plan(args.pack, args.dsh_home, args.target_profile, args.incremental, options, directory)
+                    payload = {'status': 'plan', 'plan': preview, 'canContinue': True}
+                else:
+                    payload = locked_execute(args.pack, args.dsh_home, args.target_profile, args.incremental, options, args.plan_token, directory)
+                from .partial_import import result_report
+                if hasattr(args, 'partial_report'):
+                    payload = result_report(payload, args.partial_report)
+                _emit({**payload, 'compatibility': getattr(args, 'compatibility', None)}, args.command)
+                return 0
         if args.plan_only:
             plan = create_import_plan(args.pack, args.dsh_home, options=options)
             payload = {"status": "plan", "readOnly": True, "plan": plan.as_dict()}
+            if hasattr(args, 'partial_report'):
+                from .partial_import import result_report
+                payload = result_report(payload, args.partial_report)
             if args.json:
                 _emit(payload, args.command)
             else:
                 print(f"Plan: {plan.profile_name}")
             return 0
-        result = import_pack(args.pack, args.dsh_home, options=options)
+        from .incremental import protected_import
+        result = protected_import(args.pack, args.dsh_home, options)
     except (PackImportError, ValueError, OSError) as error:
         payload = {"status": "failed", "error": error.as_dict() if isinstance(error, PackImportError) else {"message": str(error)}}
         if args.json:
@@ -308,12 +413,15 @@ def _run_import(args: argparse.Namespace) -> int:
             print(f"Import failed: {payload['error'].get('message', str(error))}")
         return 1
     if args.json:
-        _emit(result.as_dict(), args.command)
+        from .partial_import import result_report
+        if hasattr(args, 'partial_report'):
+            result = result_report(result, args.partial_report)
+        _emit({**result, 'compatibility': getattr(args, 'compatibility', None)}, args.command)
     else:
-        print(f"Status: {result.status}")
-        print(f"Profile: {result.profile_path}")
-        print(f"Metadata: {result.metadata_path}")
-        print(f"Installed plugins: {len(result.installed_plugins)}")
+        print(f"Status: {result['status']}")
+        print(f"Profile: {result['profilePath']}")
+        print(f"Metadata: {result['metadataPath']}")
+        print(f"Installed plugins: {len(result['installedPlugins'])}")
     return 0
 
 
@@ -426,6 +534,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     _inspect_parser(subparsers)
     _export_parser(subparsers)
+    _catalog_parser(subparsers)
     _import_parser(subparsers)
     _delete_parser(subparsers)
     _verify_parser(subparsers)

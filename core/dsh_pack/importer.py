@@ -57,6 +57,12 @@ class ImportOptions:
     target_profile_name: str | None = None
     overwrite_existing_profile: bool = False
     overwrite_confirmation: str | None = None
+    allow_environment_difference: bool = False
+    allow_partial_plugins: bool = False
+    fallback_pack: Path | None = None
+    fallback_profile: Path | None = None
+    compatibility_report: Mapping[str, Any] | None = None
+    unavailable_plugins: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -116,6 +122,9 @@ class ImportResult:
             "installedPlugins": list(self.installed_plugins),
             "networkInstalls": list(self.network_installs),
             "warnings": list(self.warnings),
+            "skippedPlugins": [warning for warning in self.warnings if warning.get('action') == 'skipped'],
+            "completionStatus": 'DEGRADED' if any(warning.get('action') == 'skipped' for warning in self.warnings) else 'PASS',
+            "runtimeVerification": 'UNTESTED',
             "plan": self.plan.as_dict(),
         }
 
@@ -160,11 +169,12 @@ def _profile_name(manifest: Mapping[str, Any]) -> str:
 def _validate_profile_name(name: str, *, label: str = "Profile name") -> str:
     if (
         not isinstance(name, str)
-        or not name.strip()
+        or not name or name.strip() != name
         or name in {".", ".."}
-        or "/" in name
-        or "\\" in name
-        or "\x00" in name
+        or re.search(r'[<>:"/\\|?*\x00-\x1f\x7f]', name)
+        or name.endswith((".", " "))
+        or re.match(r"^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)", name, re.I)
+        or name.lower() == "node_modules"
     ):
         raise PackImportError(
             f"{label} must be a single safe directory name",
@@ -494,6 +504,7 @@ def _context(options: ImportOptions) -> PreflightContext:
         available_plugins=_reference_inventory(options),
         allow_network_reference_install=options.allow_network_reference_install,
         verified_local_plugins=verified_local_plugins,
+        allow_environment_difference=options.allow_environment_difference,
     )
 
 
@@ -1111,8 +1122,15 @@ def _pnpm_rebuild(profile: Path, data: PackData, plugins: list[Mapping[str, Any]
         args.append('--offline')
     environment = dict(os.environ, ELECTRON_RUN_AS_NODE='1')
     try:
-        completed = subprocess.run(args, cwd=profile, env=environment, capture_output=True, text=True,
-                                   timeout=max(1, options.network_install_timeout), check=False)
+        import time
+        for attempt in range(3):
+            completed = subprocess.run(args, cwd=profile, env=environment, capture_output=True, text=True,
+                                       timeout=max(1, options.network_install_timeout), check=False)
+            output = (completed.stdout or '') + (completed.stderr or '')
+            transient = any(code in output for code in ('ERR_PNPM_META_FETCH_FAIL', 'fetch failed', 'ECONNRESET', 'ETIMEDOUT', 'ERR_SOCKET_TIMEOUT'))
+            if not completed.returncode or not transient or attempt == 2:
+                break
+            time.sleep(0.3 * (attempt + 1))
     except (OSError, subprocess.TimeoutExpired) as error:
         raise PackImportError('cannot rebuild the target with pnpm', stage='configuration', code='PACKAGE_MANAGER_FAILED', details={'error': str(error), 'command': args}) from error
     if completed.returncode:
@@ -1139,7 +1157,7 @@ def _pnpm_rebuild(profile: Path, data: PackData, plugins: list[Mapping[str, Any]
     except (ValueError, KeyError, TypeError) as error:
         raise PackImportError('pnpm installation records cannot be safely relocated', stage='configuration', code='PACKAGE_MANAGER_STATE_UNSUPPORTED', details={'error': str(error)}) from error
     adaptation = _adapt_profile_patch(profile, options)
-    return {'resolver': 'pnpm', 'scripts': 'ignored', 'packageImportMethod': 'copy', 'requests': dependencies,
+    return {'resolver': 'pnpm', 'scripts': 'ignored', 'packageImportMethod': 'copy', 'requests': dependencies, 'attempts': attempt + 1,
             **({'profilePatchAdaptation': adaptation} if adaptation is not None else {}),
             'hostProvidedDependencies': host_dependencies,
             'workspaceSha256': sha256_bytes((profile / 'pnpm-workspace.yaml').read_bytes()),
@@ -1179,6 +1197,21 @@ def _cleanup_empty(path: Path | None) -> None:
         next(path.iterdir())
     except StopIteration:
         path.rmdir()
+
+
+def _commit_prepared_profile(source: Path, target: Path) -> None:
+    """Allow a short Windows sharing delay without replacing an existing Profile."""
+    import time
+    for attempt in range(5):
+        if target.exists():
+            raise PackImportError("target Profile appeared during Import", stage="commit", code="PROFILE_EXISTS")
+        try:
+            source.rename(target)
+            return
+        except PermissionError as error:
+            if getattr(error, "winerror", None) not in {5, 32} or attempt == 4:
+                raise
+            time.sleep(0.1 * (2 ** attempt))
 
 
 def import_pack(
@@ -1243,7 +1276,8 @@ def import_pack(
     backup_token = uuid.uuid4().hex
     network_plugins = {str(plugin.get("name")): plugin for plugin in _network_reference_plugins(data, options)}
     network_installs: list[dict[str, Any]] = []
-    warnings: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = [dict(row, action='skipped') for row in (options.compatibility_report or {}).get('skippedPlugins', [])]
+    warnings.extend(dict(row, action='skipped') for row in options.unavailable_plugins.values())
     metadata_parent = plan.metadata_path.parent
     metadata_root = metadata_parent.parent
     metadata_parent_existed = metadata_parent.exists()
@@ -1262,6 +1296,14 @@ def import_pack(
         installed: list[dict[str, Any]] = []
         lock_plugins = [plugin for plugin in data.plugins_lock.get("plugins", []) if isinstance(plugin, Mapping)]
         installed_names: set[str] = set()
+        def skip_plugin(plugin, error):
+            from .partial_import import CORE, RECOVERABLE
+            if not options.allow_partial_plugins or plugin['name'] in CORE or error.code not in RECOVERABLE:
+                raise error
+            name = str(plugin['name'])
+            _remove_staged_package(temp_profile, name, stage='compatibility')
+            installed_names.discard(name)
+            warnings.append({'name': name, 'action': 'skipped', 'reason': error.code, 'diagnostic': error.as_dict()})
 
         # npm reconciles the entire tree and can prune previously extracted
         # packages. Complete every npm operation before materializing embedded
@@ -1270,6 +1312,8 @@ def import_pack(
         if network_plugins:
             _write_network_manifest(temp_profile, network_dependencies)
         for plugin in lock_plugins:
+            if plugin['name'] in options.unavailable_plugins:
+                continue
             artifact = plugin.get("artifact")
             if not isinstance(artifact, Mapping) or artifact.get("mode") != "reference-only":
                 continue
@@ -1283,6 +1327,9 @@ def import_pack(
             except PackImportError as error:
                 if plugin.get("required") is True:
                     raise
+                if options.allow_partial_plugins:
+                    skip_plugin(plugin, error)
+                    continue
                 _remove_staged_package(temp_profile, name, stage="network-install")
                 warnings.append(error.as_dict())
                 continue
@@ -1295,6 +1342,8 @@ def import_pack(
         for plugin in lock_plugins:
             artifact = plugin.get("artifact")
             if not isinstance(artifact, Mapping) or artifact.get("mode") != "embedded":
+                continue
+            if plugin['name'] in options.unavailable_plugins:
                 continue
             path = artifact.get("path")
             if not isinstance(path, str):
@@ -1319,23 +1368,32 @@ def import_pack(
             if not isinstance(artifact, Mapping) or artifact.get("mode") != "reference-only":
                 continue
             name = str(plugin["name"])
+            if name in options.unavailable_plugins:
+                continue
             if options.reference_installer is not None:
                 try:
                     options.reference_installer(temp_profile, plugin)
-                except PackImportError:
-                    raise
+                except PackImportError as error:
+                    skip_plugin(plugin, error)
+                    continue
                 except Exception as error:
-                    raise PackImportError(
+                    failure = PackImportError(
                         f"reference-only plugin installation failed: {name}",
                         stage="reference-install",
                         code="PLUGIN_INSTALL_FAILED",
                         details={"plugin": name, "error": str(error)},
-                    ) from error
+                    )
+                    skip_plugin(plugin, failure)
+                    continue
                 installed_names.add(name)
                 continue
             if name in options.reference_plugin_sources:
                 _remove_staged_package(temp_profile, name, stage="reference-install")
-                _copy_reference_source(temp_profile, plugin, Path(options.reference_plugin_sources[name]))
+                try:
+                    _copy_reference_source(temp_profile, plugin, Path(options.reference_plugin_sources[name]))
+                except PackImportError as error:
+                    skip_plugin(plugin, error)
+                    continue
                 installed_names.add(name)
                 continue
             if options.allow_network_reference_install and name in network_plugins:
@@ -1351,12 +1409,61 @@ def import_pack(
         # A later npm operation or installer can replace an earlier package.
         # Confirm the final tree, not stale per-install observations, before any
         # portable Home data is written or the prepared Profile is committed.
+        if options.allow_partial_plugins:
+            for plugin in lock_plugins:
+                if str(plugin['name']) in installed_names:
+                    try:
+                        _verify_identity(temp_profile, plugin)
+                    except PackImportError as error:
+                        skip_plugin(plugin, error)
+            missing = {str(plugin['name']) for plugin in lock_plugins} - installed_names
+            if missing:
+                from .partial_import import prune_plugins, merge_command
+                data, excluded = prune_plugins(data, missing, merge_command())
+                retained = set()
+                if options.fallback_pack and options.fallback_profile:
+                    from .partial_import import restore_baseline
+                    from .incremental import preserve_kept_plugins
+                    data, retained = restore_baseline(data, read(options.fallback_pack), excluded)
+                    preserve_kept_plugins(options.fallback_profile, temp_profile, retained)
+                    for row in data.plugins_lock['plugins']:
+                        if row['name'] in retained:
+                            _verify_identity(temp_profile, row)
+                    installed_names.update(retained)
+                reported = {warning.get('name') for warning in warnings if warning.get('action') == 'skipped'}
+                for name in excluded:
+                    if name not in retained:
+                        _remove_staged_package(temp_profile, name, stage='compatibility')
+                        installed_names.discard(name)
+                    if name not in reported:
+                        warnings.append({'name': name, 'action': 'skipped', 'reason': 'PLUGIN_DEPENDENCY_UNAVAILABLE' if name not in missing else 'PLUGIN_MISSING'})
+                for warning in warnings:
+                    if warning.get('name') in retained:
+                        warning['retainedExisting'] = True
+                        warning['configurationPreserved'] = True
+                lock_plugins = data.plugins_lock['plugins']
+                for name in data.profile_files:
+                    if not name.startswith('.dsh-crate/'):
+                        (temp_profile / name).parent.mkdir(parents=True, exist_ok=True)
+                        (temp_profile / name).write_bytes(data.profile_files[name])
         if options.pnpm_command:
             selected = [plugin for plugin in lock_plugins if str(plugin['name']) in installed_names]
             # Validate the inputs before letting the manager consume them.
             for plugin in selected:
                 _verify_identity(temp_profile, plugin)
-            network_installs.append(_pnpm_rebuild(temp_profile, data, selected, options))
+            try:
+                network_installs.append(_pnpm_rebuild(temp_profile, data, selected, options))
+            except PackImportError as error:
+                if not options.allow_partial_plugins:
+                    raise
+                from .partial_import import manager_exclusions
+                rejected = manager_exclusions(temp_profile, data, selected, options, error)
+                if not rejected or set(rejected) & set(options.unavailable_plugins):
+                    raise
+                _cleanup(temp_profile)
+                temp_profile = None
+                return import_pack(source_path, home_path, options=replace(options,
+                    unavailable_plugins={**options.unavailable_plugins, **rejected}))
         installed = [_verify_identity(temp_profile, plugin) for plugin in lock_plugins
                      if str(plugin["name"]) in installed_names]
 
@@ -1381,7 +1488,7 @@ def import_pack(
                 )
             original_metadata_backup = metadata_parent / f".{plan.profile_name}.dsh-pack-backup-{backup_token}"
             plan.metadata_path.rename(original_metadata_backup)
-        temp_profile.rename(final_profile)
+        _commit_prepared_profile(temp_profile, final_profile)
         temp_profile = None
         final_created = True
 
@@ -1390,6 +1497,12 @@ def import_pack(
         metadata_created = True
         (plan.metadata_path / "manifest.json").write_bytes(json.dumps(data.manifest, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8") + b"\n")
         (plan.metadata_path / "plugins.lock.json").write_bytes(json.dumps(data.plugins_lock, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8") + b"\n")
+        if options.allow_partial_plugins:
+            (plan.metadata_path / 'compatibility.json').write_text(json.dumps({
+                'compatibilityReport': options.compatibility_report,
+                'skippedPlugins': [row for row in warnings if row.get('action') == 'skipped'],
+                'runtimeVerification': 'UNTESTED',
+            }, ensure_ascii=False, indent=2), encoding='utf-8')
         (plan.metadata_path / "prepared.json").write_bytes(
             json.dumps(_metadata_payload(plan, data, tuple(installed), pack_digest,
                        network_installs[-1] if options.pnpm_command else None), ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8") + b"\n"

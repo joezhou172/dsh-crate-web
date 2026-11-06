@@ -1,0 +1,4 @@
+{
+  "valid": ["desktop", "security-research", "安全研究", "安全研究 测试", "Research 2026", "环境.2"],
+  "invalid": ["", " ", ".", "..", "../web", "a/b", "a\\b", "C:\\test", "a:b", "a*", "a?", "a\"", "a<", "a>", "a|", "a\u0000", "a\n", "a\u007f", "tail.", "tail ", " leading", "CON", "con.txt", "NUL", "aux", "PRN", "COM1", "LPT9.txt", "COM¹", "node_modules", "NODE_MODULES"]
+}

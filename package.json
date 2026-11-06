@@ -1,7 +1,7 @@
 {
   "name": "dsh-crate-web",
   "description": "DSH Web Settings surface for DSH Crate export, import, inspect, and history",
-  "version": "0.1.2-preview.6",
+  "version": "0.1.2-preview.15",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -23,6 +23,7 @@
     "restart-helper.mjs",
     "verify-desktop.mjs",
     "desktop-patch-helper.mjs",
+    "merge-config.mjs",
     "cordis.patch.yml",
     "core/dsh_pack/**/*.py",
     "runtime/python",
@@ -34,7 +35,8 @@
     "packaging/windows-terminal/build.py",
     "packaging/windows-terminal/manifest.json",
     "packaging/windows-terminal/README.md",
-    "packaging/windows-terminal/*.patch"
+    "packaging/windows-terminal/*.patch",
+    "open-profile-runner.mjs"
   ],
   "publishConfig": {
     "access": "public",

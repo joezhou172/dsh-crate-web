@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path'
 
 export function desktopRuntimeRoot(argv = process.argv): string | undefined {
   const entry = (argv[1] ?? '').replaceAll('\\', '/')
+  if (entry.endsWith('/open-profile-runner.mjs') && process.env.DSH_CRATE_DESKTOP_RUNTIME) return resolve(process.env.DSH_CRATE_DESKTOP_RUNTIME)
   return entry.includes('/@deepseek-ai/dsh-desktop-host/') && argv[2]
     ? resolve(argv[2]) : undefined
 }

@@ -1,4 +1,16 @@
+import { SwitchConfirmation } from './SwitchConfirmation.tsx'
+import { isSafeProfileName } from '../profile-name.ts'
+import { PluginFilters, emptyPluginFilter, hasPluginFilter, matchesPluginFilter } from './PluginFilters.tsx'
+import { failureSummaries } from './failure-summary.ts'
+import { IncrementalImport } from './IncrementalImport.tsx'
+import { ExportSelection, ReferenceConfirmation } from './ExportSelection.tsx'
+import type { CatalogPlugin, ExportChoice } from './ExportSelection.tsx'
+import { SizePreview } from './SizePreview.tsx'
+import { CrateIcon } from './CrateIcon.tsx'
+import { DESIGN_STYLE } from './design-style.ts'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { DetailsButton, ReportContext, ReportDialog } from './ReportDialog.tsx'
+import type { AgentBridge } from './ReportDialog.tsx'
 import { Toast } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { DshCrateLocaleKey } from './locales.ts'
@@ -18,20 +30,41 @@ export const css = {
 }
 
 export const STYLE = `
+.dsh-crate-choice{padding:10px 0;border-bottom:1px solid var(--dsw-alias-border-l2);overflow-wrap:anywhere}
+.dsh-crate-choice-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px}
+.dsh-crate-choice-controls>*{min-width:0;max-width:100%}
+.dsh-crate-choice label{font-size:13px}
 .dsh-crate-section{display:flex;flex-direction:column;gap:12px;max-width:760px;color:var(--dsw-alias-label-primary)}
 .dsh-crate-heading{margin:0;font-size:18px;font-weight:600}.dsh-crate-intro,.dsh-crate-muted{margin:0;font-size:13px;color:var(--dsw-alias-label-tertiary)}
 .dsh-crate-tabs{display:flex;gap:20px;border-bottom:1px solid var(--dsw-alias-border-l2);overflow:auto}.dsh-crate-tab{border:0;padding:7px 1px 9px;background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;cursor:pointer;white-space:nowrap}
 .dsh-crate-tab[data-active=true]{color:var(--dsw-alias-label-primary);border-bottom:2px solid var(--dsw-alias-label-primary)}.dsh-crate-form{display:flex;flex-direction:column;gap:10px}
-.dsh-crate-label{display:flex;flex-direction:column;gap:5px;font-size:13px}.dsh-crate-select,.dsh-crate-file{max-width:100%;min-width:0;padding:7px 8px;border:1px solid var(--dsw-alias-border-l2,#3a3a40);border-radius:6px;background-color:var(--dsw-alias-bg-layer-1,Canvas);color:var(--dsw-alias-label-primary,CanvasText);color-scheme:inherit}.dsh-crate-select option{background-color:var(--dsw-alias-bg-layer-1,Canvas);color:var(--dsw-alias-label-primary,CanvasText)}.dsh-crate-inventory-item{overflow-wrap:anywhere}.dsh-crate-inventory-item>span{min-width:0}
+.dsh-crate-label{display:flex;flex-direction:column;gap:5px;font-size:13px}.dsh-crate-select,.dsh-crate-file{max-width:100%;min-width:0;padding:7px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background-color:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);color-scheme:inherit}.dsh-crate-select option{background-color:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}.dsh-crate-inventory-item{overflow-wrap:anywhere}.dsh-crate-inventory-item>span{min-width:0}
 .dsh-crate-plugin{display:grid;grid-template-columns:minmax(0,1fr) 150px;gap:8px;align-items:center}.dsh-crate-button{align-self:flex-start;border:0;border-radius:6px;padding:8px 13px;background:var(--dsw-alias-state-business-primary);color:white;cursor:pointer}.dsh-crate-button:disabled{cursor:default;opacity:.5}
-.dsh-crate-report,.dsh-crate-preview,.dsh-crate-diagnostic{display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow-wrap:anywhere;font-size:12px}.dsh-crate-finding,.dsh-crate-step{padding:7px;border-radius:5px;background:var(--dsw-alias-fill-tertiary)}
+.dsh-crate-report,.dsh-crate-preview,.dsh-crate-diagnostic{display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow-wrap:anywhere;font-size:12px}.dsh-crate-finding,.dsh-crate-step{padding:7px;border-radius:5px;background:var(--dsw-alias-bg-module-platform)}
 .dsh-crate-preview-row{display:grid;grid-template-columns:170px minmax(0,1fr);gap:8px}.dsh-crate-preview-row pre{margin:0;white-space:pre-wrap}.dsh-crate-diagnostic-grid{display:grid;grid-template-columns:150px minmax(0,1fr);gap:6px}.dsh-crate-diagnostic-grid dt{font-weight:600}.dsh-crate-diagnostic-grid dd{margin:0;white-space:pre-wrap}.dsh-crate-step{display:flex;gap:8px;align-items:flex-start}.dsh-crate-step-status{min-width:80px;font-weight:600}
-.dsh-crate-history{list-style:none;display:flex;flex-direction:column;gap:8px;padding:0;margin:0}.dsh-crate-history-item{display:flex;justify-content:space-between;gap:10px;padding:8px;border-bottom:1px solid var(--dsw-alias-border-l2);font-size:12px}.dsh-crate-error{color:var(--dsw-alias-label-negative)}
+.dsh-crate-history{list-style:none;display:flex;flex-direction:column;gap:8px;padding:0;margin:0}.dsh-crate-history-item{display:flex;justify-content:space-between;gap:10px;padding:8px;border-bottom:1px solid var(--dsw-alias-border-l2);font-size:12px}.dsh-crate-error{color:var(--dsw-alias-state-error-primary)}
 .dsh-crate-inventory{display:flex;flex-direction:column;gap:6px;padding:8px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;font-size:12px}.dsh-crate-inventory-item{display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid var(--dsw-alias-border-l2)}.dsh-crate-inventory-item:last-child{border-bottom:0}
-.dsh-crate-success{display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid var(--dsw-alias-label-positive);border-radius:8px;background:var(--dsw-alias-fill-positive);font-size:12px}
-.dsh-crate-group{display:flex;flex-direction:column;gap:6px}.dsh-crate-group-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 0}.dsh-crate-group-toggle{border:0;background:transparent;color:var(--dsw-alias-state-business-primary,#4f8cff);font:inherit;font-size:12px;cursor:pointer;padding:2px 4px}.dsh-crate-group-body{display:flex;flex-direction:column;gap:6px}
-.dsh-crate-badge{margin-left:6px;padding:1px 5px;border-radius:4px;background:var(--dsw-alias-fill-tertiary);color:var(--dsw-alias-label-tertiary);font-size:11px;border:1px solid var(--dsw-alias-border-l2)}.dsh-crate-conflict{color:var(--dsw-alias-label-negative)}
-.dsh-crate-modal-backdrop{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(0,0,0,.58)}.dsh-crate-modal{display:flex;flex-direction:column;gap:12px;width:min(420px,calc(100vw - 48px));padding:18px;border:1px solid var(--dsw-alias-border-l2,#3a3a40);border-radius:10px;background:var(--dsw-alias-fill-primary,#1d1d20);color:var(--dsw-alias-label-primary,#f9fafb);box-shadow:0 18px 50px rgba(0,0,0,.45)}.dsh-crate-modal h3{margin:0;font-size:16px}.dsh-crate-modal p{margin:0;font-size:13px;color:var(--dsw-alias-label-tertiary,#b6b6bd)}.dsh-crate-modal-actions{display:flex;justify-content:flex-end;gap:8px}.dsh-crate-modal-actions button:last-child{background:var(--dsw-alias-state-business-primary,#4b7bec);color:#fff}
+.dsh-crate-success{display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid var(--dsw-alias-state-success-primary);border-radius:8px;background:var(--dsw-alias-state-success-tertiary);font-size:12px}
+.dsh-crate-group{display:flex;flex-direction:column;gap:6px}.dsh-crate-group-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 0}.dsh-crate-group-toggle{border:0;background:transparent;color:var(--dsw-alias-state-business-primary);font:inherit;font-size:12px;cursor:pointer;padding:2px 4px}.dsh-crate-group-body{display:flex;flex-direction:column;gap:6px}
+.dsh-crate-badge{margin-left:6px;padding:1px 5px;border-radius:4px;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-tertiary);font-size:11px;border:1px solid var(--dsw-alias-border-l2)}.dsh-crate-conflict{color:var(--dsw-alias-state-error-primary)}
+.dsh-crate-modal-backdrop{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(0,0,0,.58)}.dsh-crate-modal{display:flex;flex-direction:column;gap:12px;width:min(420px,calc(100vw - 48px));padding:18px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);box-shadow:0 18px 50px rgba(0,0,0,.45)}.dsh-crate-modal h3{margin:0;font-size:16px}.dsh-crate-modal p{margin:0;font-size:13px;color:var(--dsw-alias-label-tertiary)}.dsh-crate-modal-actions{display:flex;justify-content:flex-end;gap:8px}.dsh-crate-modal-actions button:last-child{background:var(--dsw-alias-state-business-primary);color:#fff}
+
+.dsh-crate-section{min-width:0;width:100%;line-height:1.55}
+.dsh-crate-section summary{cursor:pointer;font-weight:600;padding:6px 0}
+.dsh-crate-section details[open]>summary{margin-bottom:8px}
+.dsh-crate-section pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.dsh-crate-secondary{border:1px solid var(--dsw-alias-border-l2);border-radius:6px;padding:8px 12px;background:transparent;color:inherit;font:inherit;cursor:pointer;align-self:flex-start}
+.dsh-crate-secondary:disabled{opacity:.5;cursor:default}
+.dsh-crate-section button:focus-visible,.dsh-crate-section summary:focus-visible,.dsh-crate-report-dialog :focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:3px}
+.dsh-crate-report-dialog{box-sizing:border-box;width:min(840px,calc(100vw - 32px));max-height:calc(100dvh - 32px);padding:20px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);overflow:auto}
+.dsh-crate-report-dialog::backdrop{background:rgba(0,0,0,.55)}
+.dsh-crate-report-dialog header{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.dsh-crate-report-dialog h3{margin:0;font-size:18px}
+.dsh-crate-report-dialog pre{box-sizing:border-box;max-height:50dvh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;font-size:12px;line-height:1.6}
+.dsh-crate-dialog-actions,.dsh-crate-status-list{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.dsh-crate-status-list span{padding:3px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:5px}
+.dsh-crate-report-dialog p{overflow-wrap:anywhere}
+
 @media(max-width:600px){
   [data-dsh-module=settings]:has(.dsh-crate-section){flex-direction:column;width:calc(100vw - 24px);max-width:calc(100vw - 24px)}
   [data-dsh-module=settings]:has(.dsh-crate-section)>nav{width:100%;gap:8px;padding:12px 12px 0}
@@ -49,11 +82,11 @@ export const STYLE = `
 `
 
 type Tab = 'export' | 'import' | 'inspect' | 'verify' | 'history'
-type ImportMode = 'new' | 'overwrite'
+type ImportMode = 'new' | 'overwrite' | 'add' | 'update'
 export type Json = Record<string, unknown>
 interface Profile { name: string; installedBundles: Json[] }
 interface HistoryItem { time?: string; action?: string; status?: string; profile?: string; pack?: string; message?: string }
-type PageProps = PropsRuntime<'settings.section'> & PropsLocale<'dsh.crate'>
+type PageProps = PropsRuntime<'settings.section'> & PropsLocale<'dsh.crate'> & { agentBridge?: AgentBridge }
 
 export function isObject(value: unknown): value is Json { return value !== null && typeof value === 'object' && !Array.isArray(value) }
 
@@ -63,14 +96,6 @@ function resultOf(value: Json): Json {
 
 export function objects(value: unknown): Json[] {
   return Array.isArray(value) ? value.filter(isObject) : []
-}
-
-function failMessage(value: Json): string {
-  const error = diagnosticOf(value)
-  if (error !== undefined && typeof error.message === 'string' && error.message) return error.message
-  const result = resultOf(value)
-  if (typeof result.message === 'string' && result.message) return result.message
-  return ''
 }
 
 function display(value: unknown): string {
@@ -130,8 +155,8 @@ function ExportPlugins({ value, t }: { value: Json | undefined; t: (key: DshCrat
   const result = resultOf(value)
   const plugins = objects(result.plugins)
   if (plugins.length === 0) return null
-  return <div className={css.inventory} data-field="exportPlugins">
-    <strong>{t('exportPlugins')}</strong>
+  return <details className={css.inventory} data-field="exportPlugins">
+    <summary>{t('exportPlugins')} · {plugins.length}</summary>
     {plugins.map((plugin, index) => {
       const bundle = isObject(plugin.bundle) ? plugin.bundle : {}
       const artifact = isObject(plugin.artifact) ? plugin.artifact : {}
@@ -144,7 +169,7 @@ function ExportPlugins({ value, t }: { value: Json | undefined; t: (key: DshCrat
         <span>{bundleLabel} · {String(artifact.mode ?? 'unknown')} · {String(runtime.source ?? 'unknown')}</span>
       </div>
     })}
-  </div>
+  </details>
 }
 
 export async function request(action: string, body: Json = {}): Promise<Json> {
@@ -173,45 +198,35 @@ function diagnosticOf(value: Json): Json | undefined {
   return isObject(result.error) ? result.error : undefined
 }
 
-function Diagnostic({ value, t }: { value: Json; t: (key: DshCrateLocaleKey) => string }) {
-  const [copied, setCopied] = useState(false)
-  const diagnostic = diagnosticOf(value)
-  if (diagnostic === undefined) return null
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(diagnostic, null, 2))
-      setCopied(true)
-    } catch {
-      setCopied(false)
-    }
+export function statusLabel(value: unknown, t: (key: DshCrateLocaleKey) => string): string {
+  const labels: Record<string, DshCrateLocaleKey> = {
+    PASS: 'statusPass', FAIL: 'statusFail', failed: 'statusFail', UNTESTED: 'statusUntested', DEGRADED: 'statusDegraded',
+    UNKNOWN: 'statusUnknown', prepared: 'statusPrepared', ready: 'statusReady', READY: 'statusReady',
+    BLOCKED: 'statusBlocked', BLOCKER: 'statusBlocked', NOT_READY: 'statusBlocked', WARNING: 'statusWarning', 'already-active': 'switchAlreadyActive',
+    exported: 'exportSuccess', created: 'createSuccess', deleted: 'deleteSuccess',
+    YES: 'statusYes', NO: 'statusNo', UNPROVEN: 'statusUnproven', excluded: 'statusExcluded', unsupported: 'statusUnsupported',
+    portable: 'statusPortable', 'secret-name-only': 'statusSecretName',
   }
-  const fields = ['code', 'stage', 'item', 'expected', 'observed', 'evidence', 'impact', 'originalProfileStatus', 'failedProfileStatus', 'temporaryProfileStatus', 'canContinue', 'suggestedNextStep']
-  return <div className={css.diagnostic} role="alert">
-    <strong>{t('diagnostic')}</strong>
-    <dl className={css.diagnosticGrid}>
-      {fields.filter(field => diagnostic[field] !== undefined).map(field => <div key={field}>
-        <dt>{field}</dt><dd>{display(diagnostic[field])}</dd>
-      </div>)}
-    </dl>
-    <div><button className={css.button} type="button" onClick={() => void copy()}>{copied ? t('diagnosticCopied') : t('copyDiagnostic')}</button></div>
-    <details><summary>{t('fullDiagnostic')}</summary><pre>{JSON.stringify(diagnostic, null, 2)}</pre></details>
-  </div>
+  const key = labels[String(value)]
+  return key ? t(key) : String(value ?? t('statusUnknown'))
 }
 
-function Report({ value, t }: { value: Json | undefined; t: (key: DshCrateLocaleKey) => string }) {
-  if (value === undefined) return <p className={css.muted}>{t('noReport')}</p>
+function FailureSummary({ value, t }: { value: Json; t: (key: DshCrateLocaleKey) => string }) {
+  const summaries = failureSummaries(value, t)
+  return summaries.length ? <div role="alert" data-field="failureSummary" className={css.finding}>
+    {summaries.map(item => <div key={item.title}><strong className={css.error}>{item.title}</strong><div>{item.next}</div></div>)}
+  </div> : null
+}
+
+function Report({ value, t, showFailure = true }: { value: Json | undefined; t: (key: DshCrateLocaleKey) => string; showFailure?: boolean }) {
+  if (value === undefined) return null
   const result = resultOf(value)
   const findings = objects(result.findings)
   return <div className={css.report} data-status={String(result.status ?? 'UNKNOWN')}>
-    <div><strong>{t('coreStatus')}</strong> · {String(result.status ?? 'UNKNOWN')}</div>
-    {findings.length > 0 ? <>
-      <strong>{t('findings')}</strong>
-      {findings.map((finding, index) => <div className={css.finding} key={`${String(finding.code)}-${index}`}>
-        {String(finding.severity ?? '')} / {String(finding.code ?? '')}: {String(finding.message ?? '')}
-      </div>)}
-    </> : null}
-    <Diagnostic value={value} t={t} />
-    <details><summary>{t('rawJson')}</summary><pre>{JSON.stringify(result, null, 2)}</pre></details>
+    <strong>{t('coreStatus')} · {statusLabel(result.status ?? value.status, t)}</strong>
+    {findings.length ? <span>{t('findings')}: {findings.length}</span> : null}
+    {showFailure ? <FailureSummary value={value} t={t} /> : null}
+    <DetailsButton value={value} t={t} />
   </div>
 }
 
@@ -229,14 +244,19 @@ function ImportPreview({ value, t, targetProfile, overwrite }: { value: Json; t:
   const safety = overwrite ? t('overwritePreview') : t('willNotOverwrite')
   return <div className={css.preview}>
     <strong>{t('importPreview')}</strong>
+    {isObject(result.compatibility) ? <div data-field="hostAdaptation">{t('adaptedHost')}: {String(result.compatibility.from)} → {String(result.compatibility.to)}</div> : null}
+    {!result.canContinue ? <div data-field="importBlocker">
+      <strong>{t('importBlocked')}</strong>
+      <FailureSummary value={value} t={t} />
+    </div> : null}
     <div className={css.previewRow} data-field="targetProfile"><strong>{t('targetProfile')}</strong><span>{target}</span></div>
     <div className={css.previewRow} data-field="warningCount"><strong>{t('warningCount')}</strong><span>{warningCount}</span></div>
-    <div className={css.previewRow} data-field="requiredPlugins"><strong>{t('requiredPlugins')}</strong><span>{requiredPlugins.map(pluginLabel).join(', ') || t('none')}</span></div>
-    <div className={css.previewRow} data-field="optionalPlugins"><strong>{t('optionalPlugins')}</strong><span>{optionalPlugins.map(pluginLabel).join(', ') || t('none')}</span></div>
-    <div className={css.previewRow} data-field="environment"><strong>{t('environment')}</strong><pre>{display(environment)}</pre></div>
+    <div className={css.previewRow} data-field="requiredPlugins"><strong>{t('requiredPlugins')}</strong><span>{requiredPlugins.length}</span></div>
+    <div className={css.previewRow} data-field="optionalPlugins"><strong>{t('optionalPlugins')}</strong><span>{optionalPlugins.length}</span></div>
+    <details><summary>{t('environment')}</summary><pre>{display(environment)}</pre></details>
     <div className={css.previewRow} data-field="requiredSecrets"><strong>{t('requiredSecrets')}</strong><span>{Array.isArray(secrets.required) ? secrets.required.join(', ') || t('none') : t('none')}</span></div>
     <div className={css.previewRow} data-field="missingSecrets"><strong>{t('missingSecrets')}</strong><span>{Array.isArray(secrets.missing) ? secrets.missing.join(', ') || t('none') : t('none')}</span></div>
-    <div className={css.previewRow} data-field="coreDecision"><strong>{t('coreDecision')}</strong><span>{display(result.canContinue)}</span></div>
+    <div className={css.previewRow} data-field="coreDecision"><strong>{t('coreDecision')}</strong><span>{result.canContinue ? t('canProceed') : t('cannotProceed')}</span></div>
     <div className={css.previewRow} data-field="safety"><strong>{t('safety')}</strong><span>{safety}</span></div>
   </div>
 }
@@ -249,34 +269,75 @@ function ImportSuccess({ value, t }: { value: Json | undefined; t: (key: DshCrat
   const installed = objects(result.installedPlugins)
   const profileName = String(plan.profileName ?? 'UNKNOWN')
   const overwritten = plan.overwrite === true
-  return <div className={css.success} data-field="importSuccess" role="status">
-    <strong>{t('importSuccess')}</strong>
+  const skipped = objects(result.skippedPlugins)
+  const reason = (code: unknown) => t(code === 'PLUGIN_OS_UNSUPPORTED' ? 'skipOS'
+    : code === 'PLUGIN_DEPENDENCY_UNAVAILABLE' || code === 'PLUGIN_DEPENDENCY_INSTALL_FAILED' ? 'skipDependency'
+    : typeof code === 'string' && (code.startsWith('BUNDLE_') || code.startsWith('PACKAGE_MANIFEST_') || code === 'PLUGIN_VERSION_MISMATCH') ? 'skipInvalid'
+    : 'skipInstall')
+  return <div className={skipped.length ? css.preview : css.success} data-field="importSuccess" role="status">
+    <strong>{t(skipped.length ? 'importPartial' : 'importSuccess')}</strong>
     <div data-field="preparedProfile"><strong>{t('preparedProfile')}</strong> · {profileName}</div>
     {overwritten ? <div data-field="overwriteConfirmed">{t('overwritePreview')}</div> : null}
-    <div data-field="installedPlugins"><strong>{t('installedPlugins')}</strong> · {installed.map(plugin => `${String(plugin.name ?? 'unknown')}@${String(plugin.version ?? 'unknown')}`).join(', ') || t('none')}</div>
+    <div data-field="installedPlugins"><strong>{t('installedPlugins')}</strong> · {installed.length}</div>
+    {skipped.length ? <ul data-field="skippedPlugins">{skipped.map(row => <li key={String(row.name)}>{String(row.name)} · {t(row.retainedExisting ? 'retainedExisting' : 'skippedPlugin')} · {reason(row.reason)}</li>)}</ul> : null}
+    {skipped.some(row => row.configurationPreserved) ? <p>{t('fallbackConfiguration')}</p> : null}
+    <p>{t('runtimeNotVerified')}</p>
   </div>
 }
 
 function VerifyReport({ value, t }: { value: Json | undefined; t: (key: DshCrateLocaleKey) => string }) {
-  if (value === undefined) return <p className={css.muted}>{t('noReport')}</p>
+  if (value === undefined) return null
   const result = resultOf(value)
   const steps = objects(result.steps)
+  const counts = steps.reduce<Record<string, number>>((all, step) => {
+    const key = String(step.status ?? 'UNKNOWN'); all[key] = (all[key] ?? 0) + 1; return all
+  }, {})
   return <div className={css.report} data-status={String(result.status ?? 'UNKNOWN')}>
-    <div><strong>{t('coreStatus')}</strong> · {String(result.status ?? 'UNKNOWN')}</div>
-    {steps.map((step, index) => <div className={css.step} key={`${String(step.name)}-${index}`}>
-      <span className={css.stepStatus}>{String(step.status ?? 'UNKNOWN')}</span>
-      <span><strong>{String(step.name ?? 'unknown')}</strong> — {String(step.message ?? '')}<br /><small>{display(step.evidence ?? {})}</small></span>
-    </div>)}
-    <Diagnostic value={value} t={t} />
-    <details><summary>{t('rawJson')}</summary><pre>{JSON.stringify(result, null, 2)}</pre></details>
+    <strong>{t('coreStatus')} · {statusLabel(result.status, t)}</strong>
+    <span>{t('stepCount')}: {steps.length}</span>
+    <div className="dsh-crate-status-list">{Object.entries(counts).map(([status, count]) => <span key={status}>{statusLabel(status, t)} {count}</span>)}</div>
+    <DetailsButton value={value} t={t} />
   </div>
 }
 
-export function DshCratePage({ t }: PageProps) {
+export function DshCratePage({ t, agentBridge }: PageProps) {
+  const [detail, setDetail] = useState<{ value: unknown; key: number }>()
+  const detailSequence = useRef(0)
+  const openDetails = (value: unknown) => setDetail({ value, key: ++detailSequence.current })
+  const [managerOpen, setManagerOpen] = useState(false)
   const [tab, setTab] = useState<Tab>('export')
+  const [subpage, setSubpage] = useState<'export-plugins' | 'runtime-plugins' | null>(null)
+  const pageRoot = useRef<HTMLDivElement>(null)
+  const subpageHeading = useRef<HTMLHeadingElement>(null)
+  const returnFocus = useRef<HTMLElement | null>(null)
+  const mainScroll = useRef(0)
+  const scrollOwner = () => {
+    let node = pageRoot.current?.parentElement
+    while (node) {
+      if (/(auto|scroll)/.test(getComputedStyle(node).overflowY)) return node
+      node = node.parentElement
+    }
+    return document.scrollingElement as HTMLElement | null
+  }
+  const openSubpage = (page: 'export-plugins' | 'runtime-plugins') => {
+    returnFocus.current = document.activeElement as HTMLElement
+    mainScroll.current = scrollOwner()?.scrollTop ?? 0
+    setSubpage(page)
+  }
+  const closeSubpage = () => setSubpage(null)
+  useEffect(() => {
+    const owner = scrollOwner()
+    if (owner) owner.scrollTop = subpage ? 0 : mainScroll.current
+    if (subpage) subpageHeading.current?.focus({ preventScroll: true })
+    else returnFocus.current?.focus({ preventScroll: true })
+  }, [subpage])
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [profile, setProfile] = useState('')
-  const [modes, setModes] = useState<Record<string, string>>({})
+  const [choices, setChoices] = useState<ExportChoice[]>([])
+  const [catalog, setCatalog] = useState<CatalogPlugin[]>([])
+  const [catalogReady, setCatalogReady] = useState(false)
+  const [compression, setCompression] = useState('fast')
+  const [confirmReference, setConfirmReference] = useState(false)
   const [preset, setPreset] = useState('custom')
   const [secretNames, setSecretNames] = useState('')
   const [dataSelection, setDataSelection] = useState<Json[]>([])
@@ -292,14 +353,16 @@ export function DshCratePage({ t }: PageProps) {
   const busyRef = useRef(false)
   const [error, setError] = useState('')
   const [importMode, setImportMode] = useState<ImportMode>('new')
+  const [compatibilityPolicy, setCompatibilityPolicy] = useState<'compatible' | 'strict'>('compatible')
   const [importTarget, setImportTarget] = useState('')
-  const [deleteTarget, setDeleteTarget] = useState('')
   const [deleteReport, setDeleteReport] = useState<Json>()
-  const [switchTarget, setSwitchTarget] = useState('')
+  const [switchPrompt, setSwitchPrompt] = useState<{ target: string; imported: boolean; partial: boolean; replace?: boolean }>()
   const [switchReport, setSwitchReport] = useState<Json>()
+  const [openedLink, setOpenedLink] = useState<{name: string; url: string}>()
   const [runtime, setRuntime] = useState<Json>()
   const [runtimePlugins, setRuntimePlugins] = useState<Json[]>([])
   const [updatedAt, setUpdatedAt] = useState('')
+  const [runtimeFilter, setRuntimeFilter] = useState({ ...emptyPluginFilter })
   const [toast, setToast] = useState<{ key: number; text: string }>()
   const toastSeq = useRef(0)
   const showToast = (text: string) => { toastSeq.current += 1; setToast({ key: toastSeq.current, text }) }
@@ -307,38 +370,73 @@ export function DshCratePage({ t }: PageProps) {
   const [newProfileDialogOpen, setNewProfileDialogOpen] = useState(false)
   const [newProfileDraft, setNewProfileDraft] = useState('')
   const [newProfileDialogError, setNewProfileDialogError] = useState('')
+  useEffect(() => { if (error) openDetails({ status: 'failed', message: error }) }, [error])
 
   const selectedProfile = useMemo(() => profiles.find(item => item.name === profile), [profiles, profile])
   const installedBundles = selectedProfile?.installedBundles ?? []
   const exportBundles = installedBundles.filter(bundle => bundle.active === true)
   const conflictBundles = installedBundles.filter(bundle => bundle.conflict === true)
-  const exportNames = exportBundles.map(bundle => String(bundle.name ?? '')).filter(Boolean)
+  const exportNames = choices.filter(row => row.included).map(row => row.name)
   const requiredSecrets = [...new Set(secretNames.split(/[\s,]+/).filter(Boolean))]
   const invalidSecretNames = requiredSecrets.some(name => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
   const exportBody = {
-    profileName: profile, includeInstalledBundles: true, preset, dataSelection, requiredSecrets,
-    embed: exportNames.filter(name => (modes[name] ?? 'embedded') === 'embedded'),
-    referenceOnly: exportNames.filter(name => (modes[name] ?? 'embedded') === 'reference-only'),
+    requestVersion: 2, profileName: profile, preset, dataSelection, requiredSecrets,
+    compression, plugins: choices,
   }
   const exportSignature = JSON.stringify(exportBody)
   const previewExport = async () => {
+    if (busyRef.current) return
+    busyRef.current = true
     setBusy(true); setError('')
     try {
       const value = await request('export-plan', exportBody)
-      if (value.status === 'failed') throw new Error(failMessage(value) || t('error'))
+      if (value.status === 'failed') { openDetails(value); setReviewedSelection(''); return }
+      if (typeof resultOf(value).planId !== 'string') throw new Error(t('catalogUnavailable'))
       setExportPlan(resultOf(value))
       setReviewedSelection(exportSignature)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught))
       setReviewedSelection('')
-    } finally { setBusy(false) }
+    } finally { busyRef.current = false; setBusy(false) }
   }
   useEffect(() => {
     setDataSelection([]); setDataOwners({}); setDataKinds({}); setSecretNames('')
     setExportPlan(undefined); setReviewedSelection('')
   }, [profile])
+  useEffect(() => {
+    let disposed = false
+    setChoices([]); setCatalog([]); setCatalogReady(false)
+    setConfirmReference(false)
+    if (profile) void request('export-catalog', { profileName: profile }).then(value => {
+      if (disposed) return
+      const result = resultOf(value)
+      if (value.status === 'failed' || result.requestVersion !== 2) { openDetails(value); return }
+      const items = objects(result.plugins) as unknown as CatalogPlugin[]
+      setCatalog(items)
+      setChoices(items.map(item => ({ name: item.name, included: true, selection: { kind: 'installed' }, artifactMode: 'embedded', activateOnImport: item.active })))
+      setCatalogReady(true)
+    }).catch(error => { if (!disposed) setError(String(error)) })
+    return () => { disposed = true }
+  }, [profile])
+  useEffect(() => { setConfirmReference(false) }, [exportSignature])
   const canImport = isObject(report?.result) && report.result.canContinue === true
   const currentRuntimeProfile = typeof runtime?.currentProfile === 'string' ? runtime.currentProfile : ''
+  const openedNames = Array.isArray(runtime?.openedProfiles) ? runtime.openedProfiles.filter((name): name is string => typeof name === 'string') : []
+  const inactiveImportProfiles = profiles.filter(item => item.name !== currentRuntimeProfile && !openedNames.includes(item.name))
+  const existingImportTarget = currentRuntimeProfile && inactiveImportProfiles.some(item => item.name === importTarget) ? importTarget : ''
+  const changeImportMode = (mode: ImportMode) => {
+    setImportMode(mode); setReport(undefined); setError(''); setToast(undefined)
+  }
+  const incrementalResult = (value: Json) => {
+    setReport(value)
+    if (value.status === 'failed' || resultOf(value).status === 'failed' || resultOf(value).status === 'FAIL') {
+      openDetails(value); showToast(t('error'))
+    } else if (resultOf(value).status === 'prepared') {
+      setSwitchPrompt({ target: existingImportTarget, imported: true, partial: resultOf(value).completionStatus === 'DEGRADED' })
+      showToast(`${t(resultOf(value).completionStatus === 'DEGRADED' ? 'importPartial' : 'importSuccess')} ${existingImportTarget}`)
+      void loadProfiles().catch(caught => setError(String(caught)))
+    }
+  }
 
   const loadProfiles = async () => {
     const value = await request('profiles')
@@ -347,13 +445,12 @@ export function DshCratePage({ t }: PageProps) {
       installedBundles: objects(item.installedBundles),
     }))
     const runtimeValue = isObject(value.runtime) ? value.runtime : undefined
-    const activeName = typeof runtimeValue?.currentProfile === 'string' ? runtimeValue.currentProfile : ''
-    const switchable = rows.filter(item => item.name !== activeName)
     setProfiles(rows)
     setProfile(current => (rows.some(item => item.name === current) ? current : rows[0]?.name || ''))
-    setDeleteTarget(current => rows.some(item => item.name === current) ? current : rows[0]?.name || '')
-    setSwitchTarget(current => switchable.some(item => item.name === current) ? current : switchable[0]?.name || '')
-    if (runtimeValue) setRuntime(runtimeValue)
+    if (runtimeValue) {
+      setRuntime(runtimeValue)
+      if (isObject(runtimeValue.desktopLastResult) && runtimeValue.desktopLastResult.status === 'failed') setSwitchReport({ status: 'failed', error: runtimeValue.desktopLastResult })
+    }
     setRuntimePlugins(objects(value.runtimePlugins))
     setUpdatedAt(new Date().toLocaleTimeString())
   }
@@ -395,29 +492,31 @@ export function DshCratePage({ t }: PageProps) {
   }, [tab])
 
   const run = async (action: string, body: Json) => {
+    if (busyRef.current) return
+    busyRef.current = true
     setBusy(true); setError('')
     if (action === 'export') setDownloadSelection('')
     try {
-      const value = await request(action, body)
+      const value = await request(action, { ...body, ...(action === 'inspect' || action === 'import' ? { compatibilityPolicy } : {}) })
       setReport(value)
       const result = resultOf(value)
       const profileLabel = String(body.profileName ?? '')
       if (value.status === 'failed' || result.status === 'failed' || result.status === 'FAIL') {
-        showToast(`${t('error')}: ${failMessage(value) || t('error')}`)
+        openDetails(value); showToast(t('error'))
       } else if (action === 'export' && typeof value.downloadName === 'string') {
-        setDownloadSelection(JSON.stringify(body))
+        setDownloadSelection(exportSignature)
         showToast(`${t('exportSuccess')} ${profileLabel}`.trim())
       } else if (action === 'inspect') {
-        showToast(t('inspectSuccess'))
+        showToast(result.canContinue === false ? t('cannotProceed') : t('inspectSuccess'))
       } else if (action === 'verify' && value.success !== true) {
-        showToast(`${t('verifyFinished')} ${profileLabel} · ${String(result.status ?? '')}`.trim())
+        showToast(`${t('verifyFinished')} ${profileLabel} · ${statusLabel(result.status, t)}`.trim())
       }
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught)
       setError(message)
-      showToast(`${t('error')}: ${message}`)
+      showToast(t('error'))
     }
-    finally { setBusy(false) }
+    finally { busyRef.current = false; setBusy(false) }
   }
   const createSelectedProfile = async () => {
     const target = createTarget.trim()
@@ -427,7 +526,7 @@ export function DshCratePage({ t }: PageProps) {
     try {
       const value = await request('create-profile', { profileName: target })
       if (value.status === 'failed') {
-        showToast(`${t('error')}: ${failMessage(value) || t('error')}`)
+        openDetails(value); showToast(t('error'))
       } else {
         setCreateTarget('')
         await loadProfiles()
@@ -436,19 +535,18 @@ export function DshCratePage({ t }: PageProps) {
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught)
       setError(message)
-      showToast(`${t('error')}: ${message}`)
-    } finally { setBusy(false) }
+      showToast(t('error'))
+    } finally { busyRef.current = false; setBusy(false) }
   }
-  const deleteSelectedProfile = async () => {
-    const target = deleteTarget.trim()
-    if (!target) return
+  const deleteSelectedProfile = async (target: string) => {
+    if (!target || busyRef.current || target === currentRuntimeProfile) return
     if (!window.confirm(`${t('deleteProfileWarning')}\n\n${target}`)) return
     setBusy(true); setError('')
     try {
       const value = await request('delete-profile', { profileName: target, confirmDelete: true })
       setDeleteReport(value)
       if (value.status === 'failed') {
-        showToast(`${t('error')}: ${failMessage(value) || t('error')}`)
+        openDetails(value); showToast(t('error'))
       } else {
         await loadProfiles()
         showToast(`${t('deleteSuccess')} ${target}`)
@@ -456,12 +554,24 @@ export function DshCratePage({ t }: PageProps) {
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught)
       setError(message)
-      showToast(`${t('error')}: ${message}`)
-    } finally { setBusy(false) }
+      showToast(t('error'))
+    } finally { busyRef.current = false; setBusy(false) }
   }
-  const switchSelectedProfile = async () => {
-    const target = switchTarget.trim()
-    if (!target) return
+  const desktopOperation = async (target: string, operation: 'switch' | 'default' | 'replace', makeDefault = false) => {
+    if (busyRef.current) return
+    busyRef.current = true; setBusy(true); setError(''); setSwitchPrompt(undefined)
+    try {
+      const value = await request('desktop-control', { profileName: target, operation, makeDefault, confirmDesktop: true })
+      setSwitchReport(value)
+      if (value.status === 'failed') { openDetails(value); showToast(t('error')) }
+      else if (operation === 'default') { await loadProfiles(); showToast(t('setDefaultEnvironment')) }
+      else showToast(t('desktopOperationPending'))
+    } catch (caught) { setError(String(caught)) }
+    finally { busyRef.current = false; setBusy(false) }
+  }
+  const switchSelectedProfile = async (target: string) => {
+    if (!target || busyRef.current) return
+    setSwitchPrompt(undefined)
     if (target === currentRuntimeProfile) {
       // Switching to the Profile that is already running is a no-op: the
       // requested end state already holds, so report it as a benign result.
@@ -469,19 +579,26 @@ export function DshCratePage({ t }: PageProps) {
       showToast(`${t('switchAlreadyActive')} ${target}`)
       return
     }
-    if (!window.confirm(`${t('switchProfileWarning')}\n\n${target}`)) {
-      setSwitchReport({ status: 'failed', error: { code: 'SWITCH_CANCELED', stage: 'planning', item: target, message: t('switchCanceled') } })
-      showToast(t('switchCanceled'))
-      return
-    }
+    busyRef.current = true
     setBusy(true); setError(''); setSwitchReport(undefined)
     try {
       const scheduled = await request('switch-profile', { profileName: target, confirmSwitch: true })
-      if (scheduled.status === 'failed') { setSwitchReport(scheduled); showToast(`${t('error')}: ${failMessage(scheduled) || t('error')}`); return }
+      if (resultOf(scheduled).status === 'opened') {
+        const result = resultOf(scheduled)
+        const url = new URL(String(result.url))
+        if (url.hostname !== '127.0.0.1' || !['http:', 'https:'].includes(url.protocol) || result.profileName !== target) throw Error(t('switchIdentityMismatch'))
+        setOpenedLink({ name: target, url: url.href })
+        window.open(url.href, '_blank', 'noopener,noreferrer')
+        setSwitchReport({ status: 'ok', result: { status: 'ready', profileName: target, message: t('environmentOpened') } })
+        await loadProfiles(); showToast(t('environmentOpened')); return
+      }
+      if (scheduled.status === 'failed') { setSwitchReport(scheduled); openDetails(scheduled); showToast(t('error')); return }
+      if (resultOf(scheduled).status === 'already-active') { await loadProfiles(); setSwitchReport(scheduled); showToast(t('switchAlreadyActive')); return }
       const operationId = typeof scheduled.operationId === 'string' ? scheduled.operationId : ''
       let last: Json = scheduled
-      if (!operationId) { setSwitchReport({ status: 'failed', error: { code: 'SWITCH_REPORT_MISSING', stage: 'scheduling', message: 'Switch operation did not return an operation ID.' } }); showToast(`${t('error')}: ${t('error')}`); return }
-      for (let attempt = 0; attempt < 130; attempt += 1) {
+      setSwitchReport(scheduled)
+      if (!operationId) { setSwitchReport({ status: 'failed', error: { code: 'SWITCH_REPORT_MISSING', stage: 'scheduling', message: 'Switch operation did not return an operation ID.' } }); showToast(t('error')); return }
+      for (let attempt = 0; attempt < 200; attempt += 1) {
         await new Promise(resolve => setTimeout(resolve, 500))
         try {
           const value = await request('switch-status', { operationId })
@@ -492,19 +609,38 @@ export function DshCratePage({ t }: PageProps) {
           // The old DSH process is expected to disappear briefly before the new one binds.
         }
       }
-      setSwitchReport(last)
-      const result = resultOf(last)
+      let result = resultOf(last)
+      if (result.status !== 'ready' && result.status !== 'failed') {
+        last = { status: 'failed', error: { code: 'SWITCH_STATUS_TIMEOUT', message: t('switchTimedOut'), operationId, targetProfile: target } }
+        result = { status: 'failed' }
+      }
       if (result.status === 'ready') {
+        const refreshed = await request('profiles')
+        if (!isObject(refreshed.runtime) || refreshed.runtime.currentProfile !== target) throw Error(t('switchIdentityMismatch'))
         await loadProfiles()
+        setSwitchReport(last)
         showToast(`${t('switchSuccess')} ${target}`)
       } else if (result.status === 'failed') {
-        showToast(`${t('error')}: ${failMessage(last) || t('error')}`)
+        setSwitchReport(last); openDetails(last); showToast(t('error'))
       }
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught)
+      const failure = { status: 'failed', error: { message, targetProfile: target } }
+      setSwitchReport(failure); openDetails(failure)
       setError(message)
-      showToast(`${t('error')}: ${message}`)
-    } finally { setBusy(false) }
+      showToast(t('error'))
+    } finally { busyRef.current = false; setBusy(false) }
+  }
+  const closeEnvironment = async (target: string) => {
+    if (busyRef.current || !window.confirm(`${t('closeEnvironmentWarning')}\n\n${target}`)) return
+    busyRef.current = true; setBusy(true)
+    try {
+      const value = await request('close-profile', { profileName: target, confirmClose: true })
+      if (value.status === 'failed') { openDetails(value); return }
+      if (openedLink?.name === target) setOpenedLink(undefined)
+      await loadProfiles()
+    } catch (caught) { setError(String(caught)) }
+    finally { busyRef.current = false; setBusy(false) }
   }
   const importPack = async () => {
     if (!file) return
@@ -517,51 +653,54 @@ export function DshCratePage({ t }: PageProps) {
       setNewProfileDialogOpen(true)
       return
     }
-    const target = importTarget.trim() || profiles[0]?.name || ''
+    const target = existingImportTarget
     if (!target) { setError(t('noProfiles')); return }
     if (!window.confirm(`${t('overwriteWarning')}\n\n${target}`)) { setError(t('overwriteCanceled')); return }
     setBusy(true); setError('')
     try {
-      const value = await request('import', { packBase64: await toBase64(file), targetProfile: target, overwrite: true, confirmOverwrite: true })
+      const value = await request('import', { packBase64: await toBase64(file), targetProfile: target, overwrite: true, confirmOverwrite: true, compatibilityPolicy })
       setReport(value)
       if (value.status === 'failed' || !(isObject(value.result) && value.result.status === 'prepared')) {
-        showToast(`${t('error')}: ${failMessage(value) || t('error')}`)
+        openDetails(value); showToast(t('error'))
       } else {
         await loadProfiles()
         setProfiles(current => isObject(value.profile) ? upsertProfileRow(current, value.profile) : current)
-        showToast(`${t('importOverwritten')} ${target}`)
+        setSwitchPrompt({ target: typeof resultOf(value).profileName === 'string' ? String(resultOf(value).profileName) : target, imported: true, partial: resultOf(value).completionStatus === 'DEGRADED' })
+        showToast(`${t(resultOf(value).completionStatus === 'DEGRADED' ? 'importPartial' : 'importOverwritten')} ${target}`)
       }
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught)
       setError(message)
-      showToast(`${t('error')}: ${message}`)
-    } finally { setBusy(false) }
+      showToast(t('error'))
+    } finally { busyRef.current = false; setBusy(false) }
   }
   const confirmNewProfileImport = async () => {
     if (!file) return
     const target = newProfileDraft.trim()
     if (!target) { setNewProfileDialogError(t('profileNameRequired')); return }
+    if (!isSafeProfileName(target)) { setNewProfileDialogError(t('profileNameInvalid')); return }
     if (profiles.some(item => item.name === target)) { setNewProfileDialogError(t('profileNameExists')); return }
     setImportTarget(target)
     setNewProfileDialogOpen(false)
     setNewProfileDialogError('')
     setBusy(true); setError('')
     try {
-      const value = await request('import', { packBase64: await toBase64(file), targetProfile: target, overwrite: false, confirmOverwrite: false })
+      const value = await request('import', { packBase64: await toBase64(file), targetProfile: target, overwrite: false, confirmOverwrite: false, compatibilityPolicy })
       setReport(value)
       if (value.status === 'failed' || !(isObject(value.result) && value.result.status === 'prepared')) {
-        showToast(`${t('error')}: ${failMessage(value) || t('error')}`)
+        openDetails(value); showToast(t('error'))
       } else {
         await loadProfiles()
         setProfiles(current => isObject(value.profile) ? upsertProfileRow(current, value.profile) : current)
         setProfile(target)
-        showToast(`${t('importSuccess')} ${target}`)
+        setSwitchPrompt({ target: typeof resultOf(value).profileName === 'string' ? String(resultOf(value).profileName) : target, imported: true, partial: resultOf(value).completionStatus === 'DEGRADED' })
+        showToast(`${t(resultOf(value).completionStatus === 'DEGRADED' ? 'importPartial' : 'importSuccess')} ${target}`)
       }
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught)
       setError(message)
-      showToast(`${t('error')}: ${message}`)
-    } finally { setBusy(false) }
+      showToast(t('error'))
+    } finally { busyRef.current = false; setBusy(false) }
   }
   const inspectFile = async (nextFile: File | undefined) => {
     setFile(nextFile); setReport(undefined); setError('')
@@ -569,78 +708,79 @@ export function DshCratePage({ t }: PageProps) {
     await run('inspect', { packBase64: await toBase64(nextFile) })
   }
   const input = <label className={css.label}>{t('choosePack')}<input className={css.file} type="file" accept=".dshcrate,application/zip" onChange={event => { void inspectFile(event.target.files?.[0]) }} /></label>
-  const profileSelect = <label className={css.label}>{t('profile')}<select className={css.select} value={profile} onChange={event => setProfile(event.target.value)}>{profiles.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
-  const profileManager = <div className={css.inventory} data-field="profileManagement">
-    <strong>{t('profileManagement')}</strong>
+  const profileSelect = <label className={css.label}>{t('profile')}<select aria-label={t('profile')} className={css.select} value={profile} onChange={event => {
+    if (choices.some(row => row.selection.kind === 'registry' || !row.included) && !window.confirm(t('discardExportDraft'))) return
+    setProfile(event.target.value)
+  }}>{profiles.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+  const profileManager = <details id="crate-profile-manager" className={css.inventory} data-field="profileManagement" open={managerOpen} hidden={!managerOpen}>
+    <summary>{t('profileManagement')}</summary>
     <span className={css.muted}>{t('currentRunningProfile')}: {currentRuntimeProfile || t('none')}</span>
+    <div data-field="environmentList">
+      {profiles.map(item => <div key={item.name} className="dsh-crate-environment-row" data-environment={item.name}>
+        <div><strong>{item.name}</strong>{item.name === currentRuntimeProfile ? <span className={css.muted}> · {t('currentRunningProfile')}</span> : openedNames.includes(item.name) ? <span className={css.muted}> · {t('openedState')}</span> : null}{runtime?.desktopRestartConfigured === true && runtime.defaultProfile === item.name ? <span className={css.muted}> · {t('defaultEnvironment')}</span> : null}</div>
+        <div className="dsh-crate-environment-actions">
+          {openedNames.includes(item.name) ? <button className="dsh-crate-secondary" type="button" disabled={busy} onClick={() => void closeEnvironment(item.name)}>{t('closeEnvironment')}</button> : null}
+          <button className="dsh-crate-secondary" type="button" disabled={busy || item.name === currentRuntimeProfile} onClick={() => setSwitchPrompt({ target: item.name, imported: false, partial: false })}>{t(item.name === currentRuntimeProfile ? 'active' : runtime?.desktopRestartConfigured === true ? 'restartDesktop' : runtime?.launcher === 'official-desktop' ? 'openEnvironment' : 'switchNow')}</button>
+          {runtime?.desktopRestartConfigured === true ? <details><summary>{t('desktopMore')}</summary>
+            <button className="dsh-crate-secondary" type="button" disabled={busy || runtime.defaultProfile === item.name} onClick={() => void desktopOperation(item.name, 'default')}>{t('setDefaultEnvironment')}</button>
+            <button className="dsh-crate-secondary" type="button" disabled={busy || item.name === 'desktop' || openedNames.includes(item.name)} onClick={() => setSwitchPrompt({ target: item.name, imported: false, partial: false, replace: true })}>{t('replaceDesktop')}</button>
+          </details> : null}
+          <button className="dsh-crate-secondary" type="button" disabled={busy || !currentRuntimeProfile || item.name === currentRuntimeProfile || openedNames.includes(item.name)} onClick={() => void deleteSelectedProfile(item.name)}>{t('deleteProfile')}</button>
+        </div>
+      </div>)}
+    </div>
+    <details className="dsh-crate-create-environment"><summary>{t('createProfile')}</summary>
     <label className={css.label}>{t('createProfile')}<input className={css.file} value={createTarget} placeholder={t('createProfilePlaceholder')} onChange={event => setCreateTarget(event.target.value)} /></label>
     <span className={css.muted}>{t('createProfileHint')}</span>
     <button className={css.button} type="button" disabled={busy || !createTarget.trim()} onClick={() => void createSelectedProfile()}>{busy ? t('createPending') : t('createProfile')}</button>
-    <label className={css.label}>{t('switchProfile')}<select className={css.select} value={switchTarget && switchTarget !== currentRuntimeProfile ? switchTarget : profiles.find(item => item.name !== currentRuntimeProfile)?.name || ''} onChange={event => setSwitchTarget(event.target.value)}>{profiles.filter(item => item.name !== currentRuntimeProfile).map(item => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
-    <button className={css.button} type="button" disabled={busy || !switchTarget || runtime?.restartConfigured !== true} onClick={() => void switchSelectedProfile()}>{busy ? t('switchPending') : t('switchProfile')}</button>
-    {runtime?.restartConfigured === false ? <span className={css.muted}>{t('switchUnavailable')}</span> : null}
-    <label className={css.label}>{t('deleteProfile')}<select className={css.select} value={deleteTarget || profiles[0]?.name || ''} onChange={event => setDeleteTarget(event.target.value)}>{profiles.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
-    <span className={css.muted}>{t('deleteProfileWarning')}</span>
-    <button className={css.button} type="button" disabled={busy || !deleteTarget} onClick={() => void deleteSelectedProfile()}>{t('confirmDelete')}</button>
+    </details>
     {switchReport ? <Report value={switchReport} t={t} /> : null}
     {deleteReport ? <Report value={deleteReport} t={t} /> : null}
-  </div>
+  </details>
 
-  return <div className={css.section}>
-    <style>{STYLE}</style>
-    <h2 className={css.heading}>{t('title')}</h2><p className={css.intro}>{t('intro')}</p>
+  return <ReportContext.Provider value={openDetails}><div ref={pageRoot} className={css.section}>
+    <style>{STYLE + DESIGN_STYLE}</style>
+    <div className="dsh-crate-page" hidden={subpage !== null}>
+    <header className="dsh-crate-header">
+      <div className="dsh-crate-brand"><CrateIcon name="cube" /><div><h2 className={css.heading}>{t('title')}</h2><p className={css.intro}>{t('intro')}</p></div></div>
+      {profiles.length > 0 ? <button className="dsh-crate-manage" type="button" aria-expanded={managerOpen} aria-controls="crate-profile-manager" onClick={() => setManagerOpen(value => !value)}>{t('profileManagement')}</button> : null}
+    </header>
     {profiles.length > 0 ? profileManager : null}
     <div className={css.tabs} role="tablist">
-      {(['export', 'import', 'inspect', 'verify', 'history'] as Tab[]).map(item => <button key={item} className={css.tab} data-active={tab === item} type="button" role="tab" onClick={() => setTab(item)}>{t(item)}</button>)}
+      {(['export', 'import', 'inspect', 'verify', 'history'] as Tab[]).map(item => <button key={item} className={css.tab} data-active={tab === item} type="button" role="tab" aria-selected={tab === item} onClick={() => setTab(item)}>{t(item)}</button>)}
     </div>
-    {error ? <p className={css.error} role="alert">{t('error')}: {error}</p> : null}
+    {error ? <div><FailureSummary value={{ status: 'failed', message: error }} t={t} /><DetailsButton value={{ status: 'failed', message: error }} t={t} /></div> : null}
     {tab === 'export' ? <div className={css.form}>
       {profiles.length === 0 ? <p className={css.muted}>{t('noProfiles')}</p> : <>
-        {profileSelect}
-        <div className={css.inventory} data-field="runtimePlugins">
-          <strong>{t('runtimePlugins')}{runtimePlugins.length > 0 ? ` · ${runtimePlugins.length}` : ''}</strong>
-          <span className={css.muted}>{t('updatedAt')}: {updatedAt || t('none')}</span>
-          <button className={css.button} type="button" disabled={busy} onClick={() => { void loadProfiles().catch(caught => setError(caught instanceof Error ? caught.message : String(caught))) }}>{t('refresh')}</button>
-          {currentRuntimeProfile && selectedProfile?.name !== currentRuntimeProfile
-            ? <span className={css.muted}>{t('runtimePluginsInactive')}</span>
-            : runtimePlugins.length === 0
-              ? <span className={css.muted}>{t('none')}</span>
-              : (() => {
-                  const groups = splitOfficial(runtimePlugins)
-                  const row = (plugin: Json) => <div className={css.inventoryItem} data-field="runtimePlugin" key={`${String(plugin.id ?? plugin.name)}`}><PluginName name={String(plugin.name ?? 'unknown')} official={plugin.official === true} t={t} /><span>{plugin.enabled === true ? t('runtimeEnabled') : t('runtimeDisabled')} · {String(plugin.phase ?? '—')}</span></div>
-                  return <>
-                    <PluginGroup label={t('userPlugins')} count={groups.user.length} defaultOpen t={t}>{groups.user.map(row)}</PluginGroup>
-                    <PluginGroup label={t('officialPlugins')} count={groups.official.length} defaultOpen={false} t={t}>{groups.official.map(row)}</PluginGroup>
-                  </>
-                })()}
+        <h3 className="dsh-crate-section-title">{t('exportHeading')}</h3>
+        <div className="dsh-crate-environment">{profileSelect}{profile === currentRuntimeProfile ? <span className="dsh-crate-running"><i aria-hidden="true" />{t('currentRunningProfile')}</span> : null}</div>
+        <div className="dsh-crate-page-links">
+          <button type="button" className="dsh-crate-page-link" data-field="exportPluginsEntry" disabled={busy} onClick={() => openSubpage('export-plugins')}>
+            <span>{t('exportSelection')}</span><span className="dsh-crate-count">{choices.filter(row => row.included).length}/{choices.length}</span><span aria-hidden="true">›</span>
+          </button>
+          <button type="button" className="dsh-crate-page-link" data-field="runtimePluginsEntry" onClick={() => openSubpage('runtime-plugins')}>
+            <span>{t('runtimePlugins')}</span><span className="dsh-crate-count">{runtimePlugins.length}</span><span aria-hidden="true">›</span>
+          </button>
         </div>
-        <div className={css.inventory}><strong>{t('declaredBundles')}</strong>{exportBundles.length === 0 ? <span className={css.muted}>{t('none')}</span> : (() => {
-          const groups = splitOfficial(exportBundles)
-          const row = (bundle: Json) => {
-            const name = String(bundle.name ?? '')
-            const conflict = bundle.conflict === true
-            return <div className={css.inventoryItem} key={`${name}-${String(bundle.version)}`}><span>{installedBundleLabel(bundle, t)}{conflict ? <span className={css.conflict}> · {t('conflictWarning')}</span> : null}</span><span>{String(bundle.patch ?? '')}</span><select aria-label={`${name} ${t('artifactMode')}`} className={css.select} disabled={conflict} value={modes[name] ?? 'embedded'} onChange={event => { setPreset('custom'); setModes(current => ({ ...current, [name]: event.target.value })) }}><option value="embedded">{t('embedded')}</option><option value="reference-only">{t('referenceOnly')}</option></select></div>
-          }
-          return <>
-            <PluginGroup label={t('userPlugins')} count={groups.user.length} defaultOpen t={t}>{groups.user.map(row)}</PluginGroup>
-            <PluginGroup label={t('officialPlugins')} count={groups.official.length} defaultOpen={false} t={t}>{groups.official.map(row)}</PluginGroup>
-          </>
-        })()}</div>
+        <label className={css.label}>{t('compression')}<select aria-label={t('compression')} className={css.select} disabled={busy} value={compression} onChange={event => setCompression(event.target.value)}>
+          <option value="fast">{t('compressionFast')}</option><option value="compact">{t('compressionCompact')}</option>
+        </select></label>
         {conflictBundles.length > 0 ? <div className={css.inventory} data-field="conflictBundles"><strong>{t('conflictBundles')}</strong>{conflictBundles.map(bundle => <div className={css.inventoryItem} key={`conflict-${String(bundle.name)}`}><span>{installedBundleLabel(bundle, t)}</span><span className={css.conflict}>{t('conflictWarning')}</span></div>)}</div> : null}
-        <label>{t('exportPreset')} <select className={css.select} value={preset} disabled={busy} onChange={event => {
+        <details><summary>{t('advanced')}</summary>
+        <label className="dsh-crate-preset">{t('exportPreset')} <select className={css.select} value={preset} disabled={busy} onChange={event => {
           const value = event.target.value
           setPreset(value)
-          if (value !== 'custom') setModes(Object.fromEntries(exportNames.map(name => [name, value === 'freeze' ? 'embedded' : 'reference-only'])))
-        }}><option value="share">Share</option><option value="freeze">Freeze</option><option value="custom">Custom</option></select></label>
-        <label className={css.label}>{t('requiredSecrets')}
+          if (value !== 'custom') setChoices(rows => rows.map(row => ({ ...row, artifactMode: value === 'freeze' ? 'embedded' : 'reference-only' })))
+        }}><option value="share">{t('sharePreset')}</option><option value="freeze">{t('freezePreset')}</option><option value="custom">{t('customPreset')}</option></select></label>
+<label className={css.label}>{t('requiredSecrets')}
           <input className={css.file} value={secretNames} disabled={busy} autoComplete="off" spellCheck={false} aria-describedby="crate-secret-hint" aria-invalid={invalidSecretNames} onChange={event => setSecretNames(event.target.value)} />
         </label>
         <p className={css.muted} id="crate-secret-hint">{t('secretNamesHint')}</p>
-        {invalidSecretNames ? <p className={css.error} role="alert">{t('invalidSecretNames')}</p> : null}
-        <button className={css.button} type="button" disabled={busy || !profile || invalidSecretNames} onClick={() => void previewExport()}>{busy ? t('working') : t('previewExport')}</button>
+        {invalidSecretNames ? <p className={css.error} role="alert">{t('invalidSecretNames')}</p> : null}</details>
         {exportPlan ? <div className={css.inventory} data-field="exportPreview">
-          <strong>{t('requiredSecrets')}</strong><span data-field="reviewedSecrets">{Array.isArray(exportPlan.requiredSecrets) ? exportPlan.requiredSecrets.join(', ') || t('none') : t('none')}</span>
-          <strong>{t('portableData')}</strong><p>{t('privacyReview')}</p>
+          <SizePreview value={exportPlan.sizePreview} stale={reviewedSelection !== exportSignature} t={t} />
+          {Array.isArray(exportPlan.requiredSecrets) && exportPlan.requiredSecrets.length > 0 ? <><strong>{t('requiredSecrets')}</strong><span data-field="reviewedSecrets">{exportPlan.requiredSecrets.join(', ')}</span></> : null}
+          <details><summary>{t('portableData')} · {objects(exportPlan.dataInventory).length}</summary><p>{t('privacyReview')}</p>
           {objects(exportPlan.dataInventory).map((item, index) => {
             const path = typeof item.path === 'string' ? item.path : ''
             const conversation = item.kind === 'conversation'
@@ -653,46 +793,96 @@ export function DshCratePage({ t }: PageProps) {
                   ? [...current.filter(row => row.path !== path), { path, owner, kind: conversation ? 'conversation' : dataKinds[path] || 'plugin-data' }]
                   : current.filter(row => row.path !== path))
               }} /> : null}
-              <span>{path || String(item.name ?? '')} · {String(item.classification ?? '')}</span>
+              <span>{path || String(item.name ?? '')} · {statusLabel(item.classification, t)}</span>
               {selectable && !conversation ? <>
                 <select className={css.select} aria-label={path + ' ' + t('dataOwner')} disabled={busy || chosen} value={owner} onChange={event => setDataOwners(current => ({ ...current, [path]: event.target.value }))}>
                   <option value="">{t('chooseOwner')}</option>{objects(exportPlan.plugins).map(plugin => <option key={String(plugin.name)} value={String(plugin.name)}>{String(plugin.name)}</option>)}
                 </select>
                 <select className={css.select} aria-label={path + ' ' + t('dataKind')} disabled={busy || chosen} value={dataKinds[path] || 'plugin-data'} onChange={event => setDataKinds(current => ({ ...current, [path]: event.target.value }))}>
-                  <option value="plugin-data">Plugin data</option><option value="plugin-config">Plugin config</option><option value="plugin-workflow">Plugin workflow</option>
+                  <option value="plugin-data">{t('pluginData')}</option><option value="plugin-config">{t('pluginConfig')}</option><option value="plugin-workflow">{t('pluginWorkflow')}</option>
                 </select>
               </> : null}
             </div>
           })}
+          </details>
           {isObject(exportPlan.completeness) ? <>
             <strong>{t('completeness')}</strong>
             <p>{t('embedded')}: {Array.isArray(exportPlan.completeness.embedded) ? exportPlan.completeness.embedded.length : 0}
               {' · '}{t('referenceOnly')}: {Array.isArray(exportPlan.completeness.referenceOnly) ? exportPlan.completeness.referenceOnly.length : 0}
-              {' · '}{t('offlineRestore')}{': '}{String(exportPlan.completeness.offlineRestorable ?? 'UNPROVEN')}</p>
-            <details><summary>{t('rawJson')}</summary><pre>{JSON.stringify(exportPlan.completeness, null, 2)}</pre></details>
+              {' · '}{t('offlineRestore')}{': '}{statusLabel(exportPlan.completeness.offlineRestorable ?? 'UNPROVEN', t)}</p>
+            <DetailsButton value={exportPlan} t={t} />
           </> : null}
         </div> : null}
-        <button className={css.button} type="button" disabled={busy || !profile || invalidSecretNames || reviewedSelection !== exportSignature} onClick={() => void run('export', exportBody)}>{busy ? t('exporting') : t('exportButton')}</button>
+        <div className="dsh-crate-export-actions"><button className={reviewedSelection === exportSignature ? 'dsh-crate-secondary' : css.button} type="button" disabled={busy || !profile || !catalogReady || !exportNames.length || invalidSecretNames} onClick={() => void previewExport()}>{busy ? t('working') : t('previewExport')}</button><button className={css.button} type="button" disabled={busy || !profile || invalidSecretNames || reviewedSelection !== exportSignature} onClick={() => { if (choices.some(row => row.included && row.artifactMode === 'reference-only')) setConfirmReference(true); else void run('export', { ...exportBody, planId: exportPlan?.planId }) }}>{busy ? t('exporting') : t('exportButton')}</button>{reviewedSelection !== exportSignature ? <span className={css.muted}>{t('previewFirst')}</span> : null}</div>
         {!busy && downloadSelection === exportSignature && isObject(report) && typeof report.downloadName === 'string' ? <a href={`/dsh-crate/download?name=${encodeURIComponent(report.downloadName)}`}>{t('download')}</a> : null}
-        <ExportPlugins value={report} t={t} />
-        <Report value={report} t={t} />
+        <ExportPlugins value={downloadSelection === exportSignature ? report : undefined} t={t} />
+        <Report value={downloadSelection === exportSignature ? report : undefined} t={t} />
       </>}
     </div> : null}
-    {tab === 'import' ? <div className={css.form}>
+    {tab === 'import' ? <fieldset disabled={busy} className={css.form} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
       {input}
-      <label className={css.label}>{t('importMode')}<select className={css.select} value={importMode} onChange={event => setImportMode(event.target.value as ImportMode)}><option value="new">{t('newProfile')}</option><option value="overwrite">{t('overwriteProfile')}</option></select></label>
+      <label className={css.label}>{t('compatibilityPolicy')}<select className={css.select} data-field="compatibilityPolicy" value={compatibilityPolicy} onChange={event => { setCompatibilityPolicy(event.target.value as 'compatible' | 'strict'); setReport(undefined) }}><option value="compatible">{t('compatiblePolicy')}</option><option value="strict">{t('strictPolicy')}</option></select></label>
+      <button className="dsh-crate-secondary" disabled={busy || !file} onClick={() => { if (file) void inspectFile(file) }}>{t('inspectButton')}</button>
+      <label className={css.label}>{t('importMode')}<select className={css.select} value={importMode} onChange={event => changeImportMode(event.target.value as ImportMode)}><option value="new">{t('newProfile')}</option><option value="overwrite">{t('overwriteProfile')}</option><option value="add">{t('incrementalAdd')}</option><option value="update">{t('incrementalUpdate')}</option></select></label>
       {importMode === 'new' ? <label className={css.label}>{t('newProfileName')}<input className={css.file} value={importTarget} placeholder={t('newProfileName')} onChange={event => setImportTarget(event.target.value)} /></label> : <>
-        <label className={css.label}>{t('targetProfile')}<select className={css.select} value={importTarget || profiles[0]?.name || ''} onChange={event => setImportTarget(event.target.value)}>{profiles.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
-        <p className={css.error}>{t('overwriteWarning')}</p>
+        <label className={css.label}>{t('targetProfile')}<select className={css.select} value={existingImportTarget} onChange={event => { setImportTarget(event.target.value); setReport(undefined); setError(''); setToast(undefined) }}><option value="" disabled>{t('chooseImportTarget')}</option>{profiles.map(item => <option key={item.name} value={item.name} disabled={!currentRuntimeProfile || item.name === currentRuntimeProfile || openedNames.includes(item.name)}>{item.name}{item.name === currentRuntimeProfile ? ` · ${t('importTargetRunning')}` : ''}</option>)}</select></label>
+        {!inactiveImportProfiles.length ? <p role="status">{t('noInactiveImportTarget')}</p> : null}
+        {importMode === 'overwrite' ? <p className={css.error}>{t('overwriteWarning')}</p> : null}
       </>}
-      {report ? <ImportPreview value={report} t={t} targetProfile={(importMode === 'overwrite' ? (importTarget || profiles[0]?.name) : importTarget) || undefined} overwrite={importMode === 'overwrite'} /> : null}
+      {importMode === 'add' || importMode === 'update' ? <IncrementalImport file={file} target={existingImportTarget} mode={importMode} compatibilityPolicy={compatibilityPolicy} t={t} onBusy={setBusy} onResult={incrementalResult} send={async body => { if (!file) throw Error(t('choosePack')); try { return await request('import', { ...body, packBase64: await toBase64(file) }) } catch (caught) { return { status: 'failed', error: { message: String(caught) } } } }} /> : null}
+      {report && (importMode === 'new' || importMode === 'overwrite') ? <ImportPreview value={report} t={t} targetProfile={(importMode === 'overwrite' ? (importTarget || profiles[0]?.name) : importTarget) || undefined} overwrite={importMode === 'overwrite'} /> : null}
       {report ? <ImportSuccess value={report} t={t} /> : null}
-      {report ? <Report value={report} t={t} /> : null}
-      <button className={css.button} type="button" disabled={busy || !file || !canImport || (importMode === 'overwrite' && !importTarget && profiles.length === 0)} onClick={() => void importPack()}>{busy ? t('working') : t('importButton')}</button>
-    </div> : null}
+      {report ? <Report value={report} t={t} showFailure={importMode === 'add' || importMode === 'update' || resultOf(report).canContinue !== false} /> : null}
+      {importMode === 'new' || importMode === 'overwrite' ? <button className={css.button} type="button" disabled={busy || !file || !canImport || (importMode === 'overwrite' && !existingImportTarget)} onClick={() => void importPack()}>{busy ? t('working') : t('importButton')}</button> : null}
+    </fieldset> : null}
     {tab === 'inspect' ? <div className={css.form}>{input}<Report value={report} t={t} /><button className={css.button} type="button" disabled={busy || !file} onClick={async () => { if (file) await run('inspect', { packBase64: await toBase64(file) }) }}>{busy ? t('working') : t('inspectButton')}</button></div> : null}
     {tab === 'verify' ? <div className={css.form}>{profiles.length === 0 ? <p className={css.muted}>{t('noProfiles')}</p> : <>{profileSelect}<button className={css.button} type="button" disabled={busy || !profile} onClick={() => void run('verify', { profileName: profile, mode: 'web' })}>{busy ? t('working') : t('verifyButton')}</button><VerifyReport value={report} t={t} /></>}</div> : null}
-    {tab === 'history' ? <ul className={css.history}>{history.length === 0 ? <li className={css.muted}>{t('noHistory')}</li> : history.map((item, index) => <li className={css.historyItem} key={`${item.time}-${index}`}><span>{item.time} · {item.action} · {item.profile ?? item.pack ?? ''}</span><strong>{item.status}</strong></li>)}</ul> : null}
+    {tab === 'history' ? <ul className={css.history}>{history.length === 0 ? <li className={css.muted}>{t('noHistory')}</li> : history.map((item, index) => <li className={css.historyItem} key={`${item.time}-${index}`}><span>{item.time} · {(['export', 'import', 'inspect', 'verify'].includes(item.action ?? '') ? t(item.action as Tab) : item.action)} · {item.profile ?? item.pack ?? ''}</span><strong>{statusLabel(item.status, t)}</strong><DetailsButton value={item} t={t} /></li>)}</ul> : null}
+    </div>
+    <div className="dsh-crate-page" hidden={subpage === null} data-field="pluginSubpage">
+      <header className="dsh-crate-subpage-header">
+        <button type="button" className="dsh-crate-secondary dsh-crate-text-button" onClick={closeSubpage}><span aria-hidden="true">←</span>{t('backToExport')}</button>
+        <div><h2 ref={subpageHeading} tabIndex={-1} className="dsh-crate-section-title">{subpage === 'runtime-plugins' ? t('runtimePlugins') : t('exportSelection')}</h2>
+          <p className={css.muted}>{subpage === 'runtime-plugins' ? currentRuntimeProfile || t('none') : profile}</p></div>
+      </header>
+      <div className="dsh-crate-page" hidden={subpage !== 'export-plugins'} data-field="exportPluginsPage">
+        {catalogReady ? <ExportSelection key={profile} rows={choices} catalog={catalog} disabled={busy} t={t}
+          onChange={rows => { setChoices(rows); setPreset('custom') }} onError={openDetails}
+          query={packageName => request('registry-versions', { profileName: profile, packageName })} /> : <p className={css.muted}>{t('catalogUnavailable')}</p>}
+        <button type="button" className={css.button} onClick={closeSubpage}>{t('doneSelecting')}</button>
+      </div>
+      <div className="dsh-crate-page" hidden={subpage !== 'runtime-plugins'} data-field="runtimePlugins">
+            <p className={css.muted}>{t('exportOnlyHint')}</p>
+          <div className="dsh-crate-toolbar"><span className={css.muted}>{t('updatedAt')}: {updatedAt || t('none')}</span>
+          <button className="dsh-crate-secondary dsh-crate-text-button" type="button" disabled={busy} onClick={() => { void loadProfiles().catch(caught => setError(caught instanceof Error ? caught.message : String(caught))) }}>{t('refresh')}</button></div>
+          {currentRuntimeProfile && selectedProfile?.name !== currentRuntimeProfile
+            ? <span className={css.muted}>{t('runtimePluginsInactive')}</span>
+            : runtimePlugins.length === 0
+              ? <span className={css.muted}>{t('none')}</span>
+              : (() => {
+                  const runtimeChoice = (name: string) => choices.find(item => item.name === name) ?? choices.filter(item => name.startsWith(item.name + '/')).sort((a, b) => b.name.length - a.name.length)[0]
+                  const filtered = runtimePlugins.filter(plugin => matchesPluginFilter(runtimeFilter, String(plugin.name ?? ''), plugin.official === true, runtimeChoice(String(plugin.name ?? ''))?.included))
+                  const groups = splitOfficial(filtered)
+                  const row = (plugin: Json) => {
+                    const name = String(plugin.name ?? 'unknown')
+                    const choice = runtimeChoice(name)
+                    const required = choice && catalog.some(item => item.name === choice.name && item.official)
+                    return <div className={css.inventoryItem} data-field="runtimePlugin" key={String(plugin.id ?? plugin.name)}>
+                      {choice ? <label className="dsh-crate-runtime-choice"><input type="checkbox" aria-label={name + ' ' + t('includeInExport')} checked={choice.included} disabled={busy || required} onChange={event => { setChoices(rows => rows.map(item => item.name === choice.name ? { ...item, included: event.target.checked } : item)); setPreset('custom') }} /><span className="dsh-crate-sr-only">{t('includeInExport')}</span></label> : <span aria-hidden="true" />}
+                      <div className="dsh-crate-plugin-copy"><PluginName name={name} official={plugin.official === true} t={t} /><span className={css.muted}>{plugin.enabled === true ? t('runtimeEnabled') : t('runtimeDisabled')} · {String(plugin.phase ?? '—')}</span></div>
+                      {required || !choice ? <span className={css.muted}>{t(required ? 'officialRequired' : 'runtimeNotExportable')}</span> : null}
+                    </div>
+                  }
+                  return <>
+                    <PluginFilters value={runtimeFilter} onChange={setRuntimeFilter} count={filtered.length} total={runtimePlugins.length} t={t} />
+                    <PluginGroup key={'user-' + JSON.stringify(runtimeFilter)} label={t('userPlugins')} count={groups.user.length} defaultOpen t={t}>{groups.user.map(row)}</PluginGroup>
+                    <PluginGroup key={JSON.stringify(runtimeFilter)} label={t('officialPlugins')} count={groups.official.length} defaultOpen={hasPluginFilter(runtimeFilter)} t={t}>{groups.official.map(row)}</PluginGroup>
+                  </>
+                })()}
+      </div>
+    </div>
+    {openedLink ? <p role="status" data-field="openedEnvironment">{t('environmentOpened')} <a href={openedLink.url} target="_blank" rel="noopener noreferrer">{t('openEnvironment')}: {openedLink.name}</a></p> : null}
+    {switchPrompt ? <SwitchConfirmation key={switchPrompt.target + String(switchPrompt.replace)} target={switchPrompt.target} imported={switchPrompt.imported} partial={switchPrompt.partial} available={runtime?.desktopRestartConfigured === true || runtime?.restartConfigured === true || runtime?.openConfigured === true} desktop={runtime?.launcher === 'official-desktop'} restartDesktop={runtime?.desktopRestartConfigured === true} replace={switchPrompt.replace} onCancel={() => setSwitchPrompt(undefined)} onConfirm={makeDefault => runtime?.desktopRestartConfigured === true ? void desktopOperation(switchPrompt.target, switchPrompt.replace ? 'replace' : 'switch', makeDefault) : void switchSelectedProfile(switchPrompt.target)} t={t} /> : null}
     {newProfileDialogOpen ? <div className={css.modalBackdrop} role="presentation">
       <div className={css.modal} role="dialog" aria-modal="true" aria-labelledby="dsh-crate-new-profile-title">
         <h3 id="dsh-crate-new-profile-title">{t('newProfileName')}</h3>
@@ -705,6 +895,8 @@ export function DshCratePage({ t }: PageProps) {
         </div>
       </div>
     </div> : null}
+    {confirmReference ? <ReferenceConfirmation evidence={objects(exportPlan?.referencePlugins)} rows={choices.filter(row => row.included && row.artifactMode === 'reference-only')} t={t} onCancel={() => setConfirmReference(false)} onConfirm={() => { setConfirmReference(false); void run('export', { ...exportBody, planId: exportPlan?.planId, confirmReferences: true }) }} /> : null}
+    {detail ? <ReportDialog key={`report-${detail.key}`} value={detail.value} t={t} bridge={agentBridge} onClose={() => setDetail(undefined)} /> : null}
     {toast ? <Toast key={toast.key} text={toast.text} onDone={() => setToast(undefined)} /> : null}
-  </div>
+  </div></ReportContext.Provider>
 }

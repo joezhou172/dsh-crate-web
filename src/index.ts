@@ -1,11 +1,14 @@
+import { openProfile, openedProfiles, closeOpenedProfile, closeOpenedProfiles } from './open-profile.ts'
+import { desktopControl, desktopControlState } from './desktop-control.ts'
+import { isSafeProfileName } from './profile-name.ts'
 import { readRuntimeInventory } from '../runtime-inventory.mjs'
 /** Host half: a small local HTTP bridge to the installed dsh-crate Core CLI. */
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { installWindowsRunnerHook, prepareWindowsRunner, windowsTerminalRuntime, type SandboxHook, type WindowsTerminalConfig } from './windows-terminal.ts'
 import { createReadStream } from 'node:fs'
-import { access, lstat, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
-import { platform as osPlatform } from 'node:os'
+import { access, copyFile, rename, lstat, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { homedir, platform as osPlatform } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -25,7 +28,7 @@ const SAFE_OPERATION_ID = /^[0-9a-f-]{36}$/i
 const CRATE_PACKAGE_NAME = 'dsh-crate-web'
 
 type JsonObject = Record<string, unknown>
-type Action = 'profiles' | 'history' | 'inspect' | 'export' | 'export-plan' | 'import' | 'delete-profile' | 'create-profile' | 'switch-profile' | 'switch-status' | 'verify'
+type Action = 'export-catalog' | 'registry-versions' | 'profiles' | 'history' | 'inspect' | 'export' | 'export-plan' | 'import' | 'delete-profile' | 'create-profile' | 'switch-profile' | 'switch-status' | 'close-profile' | 'desktop-control' | 'verify'
 
 interface CoreRun {
   code: number
@@ -76,6 +79,13 @@ function json(res: ServerResponse, status: number, body: JsonObject): void {
 
 function failMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function safeProfileName(value: unknown, label: string): string {
+  if (!isSafeProfileName(value)) {
+    throw new Error(`${label}: invalid environment name. Chinese, letters, numbers and spaces are allowed; paths, reserved system names and trailing dots are not.`)
+  }
+  return value
 }
 
 function safeName(value: unknown, label: string): string {
@@ -161,13 +171,28 @@ function configuredCoreCommand(): CoreCommand | undefined {
 
 function isCommandNotFound(error: unknown): boolean {
   return isObject(error) && error.code === 'ENOENT'
+    && typeof error.syscall === 'string' && error.syscall.startsWith('spawn ')
+}
+
+/** Match official dsh-home-paths: env override, then ~/.dsh; never Profile cwd. */
+function resolveHome(): string {
+  const configured = process.env.DSH_HOME
+  const value = configured?.trim() ? configured : join(homedir(), '.dsh')
+  return resolve(value === '~' ? homedir()
+    : value.startsWith('~/') || value.startsWith('~\\') ? join(homedir(), value.slice(2)) : value)
 }
 
 async function spawnCore(home: string, command: CoreCommand, args: string[]): Promise<CoreRun> {
   const selectedNames = args.flatMap((arg, index) =>
     (arg === '--embed' || arg === '--reference-only') && typeof args[index + 1] === 'string' ? [args[index + 1]!] : [])
-  const runtimeModules = await materializeDesktopModules(home, selectedNames)
   const hostBundlesFile = await writeDesktopHostBundles(home)
+  const policyIndex = args.indexOf('--compatibility-policy')
+  const compatible = policyIndex >= 0 && args[policyIndex + 1] === 'compatible'
+  if ((args.includes('--adapt-host') || compatible) && hostBundlesFile) {
+    const evidence = JSON.parse(await readFile(hostBundlesFile, 'utf8'))
+    selectedNames.push(...Object.keys(evidence.bundles ?? {}))
+  }
+  const runtimeModules = await materializeDesktopModules(home, selectedNames)
   const desktopRoot = desktopRuntimeRoot()
   let pnpmCommand: string | undefined
   let patchAdapterCommand: string | undefined
@@ -186,12 +211,14 @@ async function spawnCore(home: string, command: CoreCommand, args: string[]): Pr
         ...process.env,
         ...command.env,
         DSH_HOME: home,
+        DSH_PACK_ACTIVE_PROFILE: String(currentRuntime(home).currentProfile ?? ''),
         DSH_PACK_CORE_MODE: '1',
         PYTHONDONTWRITEBYTECODE: '1',
         ...(runtimeModules ? { DSH_PACK_RUNTIME_MODULES: runtimeModules } : {}),
         ...(pnpmCommand ? { DSH_PACK_PNPM_COMMAND: pnpmCommand } : {}),
         ...(hostBundlesFile ? { DSH_PACK_HOST_BUNDLES_FILE: hostBundlesFile } : {}),
         ...(patchAdapterCommand ? { DSH_PACK_PATCH_ADAPTER_COMMAND: patchAdapterCommand } : {}),
+        ...(desktopRoot ? { DSH_PACK_CONFIG_MERGE_COMMAND: JSON.stringify([process.execPath, '--expose-internals', join(dirname(dirname(fileURLToPath(import.meta.url))), 'merge-config.mjs'), desktopRoot]) } : {}),
       },
       shell: false,
       windowsHide: true,
@@ -283,10 +310,13 @@ function currentRuntime(home: string): JsonObject {
   const portValue = argumentValue(args, '--port') ?? process.env.DSH_PACK_PORT
   const port = portValue !== undefined && /^\d+$/.test(portValue) ? Number(portValue) : undefined
   return {
+    ...desktopControlState(home),
     currentProfile: argumentValue(args, '--profile') ?? process.env.DSH_PACK_ACTIVE_PROFILE ?? process.env.DSH_PROFILE ?? (desktopRuntimeRoot() ? 'desktop' : null),
     pid: process.pid,
     dshHome: home,
     port: port ?? null,
+    openedProfiles: openedProfiles(home),
+    openConfigured: !!desktopRuntimeRoot(),
     restartConfigured: !desktopRuntimeRoot() && typeof process.argv[1] === 'string' && port !== undefined,
     launcher: desktopRuntimeRoot() ? 'official-desktop' : 'cli',
   }
@@ -452,7 +482,7 @@ async function listProfiles(home: string): Promise<JsonObject[]> {
     const entries = await readdir(root, { withFileTypes: true })
     const profiles: JsonObject[] = []
     for (const entry of entries) {
-      if (!entry.isDirectory() || !SAFE_NAME.test(entry.name)) continue
+      if (!entry.isDirectory() || !isSafeProfileName(entry.name)) continue
       try {
         const packageJson: unknown = JSON.parse(await readFile(join(root, entry.name, 'package.json'), 'utf8'))
         if (packageJson === null || typeof packageJson !== 'object' || Array.isArray(packageJson)) continue
@@ -551,7 +581,7 @@ async function readInstalledVersion(packageRoot: string): Promise<string | undef
 }
 
 async function createProfile(home: string, body: JsonObject, workspace: { root: string; exports: string; work: string; history: string }): Promise<JsonObject> {
-  const profileName = safeName(body.profileName, 'profileName')
+  const profileName = safeProfileName(body.profileName, 'profileName')
   if (profileName === '.' || profileName === '..' || profileName === 'node_modules') {
     const error = operationDiagnostic('PROFILE_NAME_RESERVED', 'planning', profileName, `Profile name is reserved: ${profileName}`, 'The requested Profile was not created.', 'Choose another Profile name and retry.')
     return { status: 'failed', command: 'create-profile', exitCode: 2, error }
@@ -656,22 +686,23 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: object[
     const isOfficialRow = (row: object): boolean =>
       'name' in row && typeof row.name === 'string' && isOfficialPackage(row.name)
     const classifiedPlugins = runtimePlugins.map(row => ({ ...row, official: isOfficialRow(row) }))
-    return { status: 'ok', profiles: await listProfiles(home), runtimePlugins: classifiedPlugins, runtimeInventoryComplete, runtime }
+    return { status: 'ok', profiles: await listProfiles(home), runtimePlugins: classifiedPlugins, runtimeInventoryComplete, runtime, exportRequestVersion: 2 }
   }
   if (action === 'create-profile') return createProfile(home, body, workspace)
   if (action === 'history') return { status: 'ok', history: await readHistory(workspace.history) }
 
   if (action === 'inspect') {
     const pack = await savePack(workspace.work, 'inspect', body.packBase64)
-    const run = await runCore(home, ['inspect', pack, '--json', '--allow-network-reference-install', ...runtimeCoreArgs()])
+    const adaptationArgs = ['--compatibility-policy', body.compatibilityPolicy === 'strict' ? 'strict' : 'compatible', ...(body.adaptHost === true ? ['--adapt-host'] : [])]
+    const run = await runCore(home, ['inspect', pack, '--json', '--allow-network-reference-install', ...adaptationArgs, ...runtimeCoreArgs()])
     try {
       const result = parseCore(run.stdout)
       let targetProfile: string | undefined
       let requestedProfileName: string | undefined
       let planFailure: JsonObject | undefined
       try {
-        const planArgs = ['import', pack, '--dsh-home', home, '--plan-only', '--json', ...runtimeCoreArgs()]
-        if (typeof body.targetProfile === 'string') planArgs.push('--target-profile', safeName(body.targetProfile, 'targetProfile'))
+        const planArgs = ['import', pack, '--dsh-home', home, '--plan-only', '--json', ...adaptationArgs, ...runtimeCoreArgs()]
+        if (typeof body.targetProfile === 'string') planArgs.push('--target-profile', safeProfileName(body.targetProfile, 'targetProfile'))
         if (body.overwrite === true) planArgs.push('--overwrite')
         const planRun = await runCore(home, planArgs)
         if (planRun.code === 0) {
@@ -700,14 +731,65 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: object[
     }
   }
 
+  if (action === 'export-catalog' || action === 'registry-versions') {
+    const profile = join(home, 'profiles', safeProfileName(body.profileName, 'profileName'))
+    const args = ['export-catalog', '--profile', profile, '--json']
+    if (action === 'registry-versions') args.push('--package', safePluginName(body.packageName, 'packageName'))
+    const run = await runCore(home, args)
+    const result = parseCore(run.stdout)
+    return { status: run.code === 0 ? 'ok' : 'failed', result,
+      ...(run.code ? { error: coreDiagnostic(result, 'Registry or inventory request failed') } : {}) }
+  }
+
   if (action === 'export' || action === 'export-plan') {
-    const profileName = safeName(body.profileName, 'profileName')
+    const profileName = safeProfileName(body.profileName, 'profileName')
     const profile = join(home, 'profiles', profileName)
     const profileRelative = relative(join(home, 'profiles'), resolve(profile))
     if (!profileRelative || profileRelative.startsWith('..') || profileRelative.includes('\\')) throw new Error('profileName escaped DSH_HOME')
+    // Only remove our own expired flat snapshot files; never recurse.
+    for (const entry of await readdir(workspace.work, { withFileTypes: true })) {
+      if (!entry.isFile() || !/^export-plan-[0-9a-f-]{36}\\.(json(?:\\.used)?|dshcrate)$/.test(entry.name)) continue
+      const file = join(workspace.work, entry.name)
+      const info = await stat(file).catch(() => undefined)
+      if (info && Date.now() - info.mtimeMs > 20 * 60 * 1000) await rm(file, { force: true })
+    }
+    const versioned = body.requestVersion === 2
+    if (body.requestVersion !== undefined && !versioned) throw new Error('Unsupported export request version')
+    if (!versioned && (body.plugins !== undefined || body.compression !== undefined)) throw new Error('Export selections require requestVersion 2')
+    const draft = { ...body }
+    delete draft.action; delete draft.planId; delete draft.confirmReferences
+    const fingerprint = createHash('sha256').update(JSON.stringify(draft)).digest('hex')
+    if (versioned && action === 'export') {
+      if (typeof body.planId !== 'string' || !SAFE_OPERATION_ID.test(body.planId)) throw new Error('Preview this selection before exporting')
+      const planPath = join(workspace.work, 'export-plan-' + body.planId + '.json')
+      const saved = JSON.parse(await readFile(planPath, 'utf8'))
+      if (saved.fingerprint !== fingerprint || Date.now() > saved.expires) throw new Error('Export preview expired or selection changed; preview again')
+      if (saved.references > 0 && body.confirmReferences !== true) throw new Error('Reference export confirmation is required')
+      const frozen = join(workspace.work, 'export-plan-' + body.planId + '.dshcrate')
+      const bytes = await readFile(frozen)
+      if (createHash('sha256').update(bytes).digest('hex') !== saved.sha256) throw new Error('Frozen export integrity mismatch')
+      const claim = planPath + '.used'
+      await rename(planPath, claim)
+      const outputName = profileName + '-' + randomUUID() + '.dshcrate'
+      try {
+        await copyFile(frozen, join(workspace.exports, outputName))
+      } catch (error) {
+        await rm(join(workspace.exports, outputName), { force: true })
+        await rename(claim, planPath)
+        throw error
+      }
+      await Promise.all([rm(claim, { force: true }), rm(frozen, { force: true })])
+      const item = await record(workspace.history, { time: new Date().toISOString(), action, status: 'PASS', profile: profileName, pack: outputName })
+      return { status: 'ok', command: action, result: { ...saved.result, status: 'exported' }, downloadName: outputName, history: item }
+    }
+    const planId = versioned ? randomUUID() : undefined
     const outputName = `${profileName}-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}.dshcrate`
-    const args = ['export', '--profile', profile, '--output', join(workspace.exports, outputName), '--json', ...runtimeCoreArgs()]
+    const args = ['export', '--profile', profile, '--output', (planId ? join(workspace.work, 'export-plan-' + planId + '.dshcrate') : join(workspace.exports, outputName)), '--json', ...runtimeCoreArgs()]
     if (action === 'export-plan') args.push('--plan-only')
+    if (versioned) {
+      if (!Array.isArray(body.plugins) || !['fast', 'compact'].includes(String(body.compression))) throw new Error('Invalid export draft')
+      args.push('--compression', String(body.compression), '--freeze-preview')
+    }
     if (typeof body.preset === 'string') args.push('--preset', body.preset)
     if (body.includeInstalledBundles === true) args.push('--include-installed-bundles')
     const embed = Array.isArray(body.embed) ? body.embed : []
@@ -720,6 +802,12 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: object[
       if (typeof name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error('requiredSecrets accepts environment variable names only; never supply Secret values')
       args.push('--required-secret', name)
     }
+    let pluginSelectionPath: string | undefined
+    if (versioned) {
+      pluginSelectionPath = join(workspace.work, 'plugins-' + randomUUID() + '.json')
+      await writeFile(pluginSelectionPath, JSON.stringify(body.plugins), { encoding: 'utf8', flag: 'wx' })
+      args.push('--plugin-selection-json', pluginSelectionPath)
+    }
     let selectionPath: string | undefined
     if (body.dataSelection !== undefined) {
       if (!Array.isArray(body.dataSelection)) throw new Error('dataSelection must be an array')
@@ -729,10 +817,22 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: object[
     }
     const run = await runCore(home, args).finally(async () => {
       if (selectionPath) await rm(selectionPath, { force: true })
+      if (pluginSelectionPath) await rm(pluginSelectionPath, { force: true })
     })
     let result: unknown
     try { result = parseCore(run.stdout) } catch { result = undefined }
     if (action === 'export-plan') {
+      if (planId && run.code === 0 && isObject(result)) {
+        const frozen = join(workspace.work, 'export-plan-' + planId + '.dshcrate')
+        const bytes = await readFile(frozen)
+        const completeness = isObject(result.completeness) ? result.completeness : {}
+        await writeFile(join(workspace.work, 'export-plan-' + planId + '.json'), JSON.stringify({
+          fingerprint, expires: Date.now() + 15 * 60 * 1000,
+          sha256: createHash('sha256').update(bytes).digest('hex'),
+          references: Array.isArray(completeness.referenceOnly) ? completeness.referenceOnly.length : 0, result,
+        }), { flag: 'wx' })
+        result = { ...result, planId }
+      }
       return { status: run.code === 0 ? 'ok' : 'failed', command: action, exitCode: run.code, result,
         ...(run.code === 0 ? {} : { error: coreDiagnostic(result, run.stderr || 'Export preview failed') }) }
     }
@@ -746,9 +846,16 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: object[
   }
 
   if (action === 'import') {
+    if (typeof body.targetProfile === 'string' && openedProfiles(home).includes(body.targetProfile)) throw Error('Close the opened environment before importing into it.')
     const pack = await savePack(workspace.work, 'import', body.packBase64)
-    const args = ['import', pack, '--dsh-home', home, '--json', ...runtimeCoreArgs()]
-    if (typeof body.targetProfile === 'string') args.push('--target-profile', safeName(body.targetProfile, 'targetProfile'))
+    const args = ['import', pack, '--dsh-home', home, '--json', '--compatibility-policy', body.compatibilityPolicy === 'strict' ? 'strict' : 'compatible', ...runtimeCoreArgs()]
+    if (body.adaptHost === true) args.push('--adapt-host')
+    if (body.incremental === 'add' || body.incremental === 'update') {
+      args.push('--incremental', body.incremental)
+      if (body.planOnly === true) args.push('--plan-only')
+      else if (typeof body.planToken === 'string') args.push('--plan-token', body.planToken)
+    }
+    if (typeof body.targetProfile === 'string') args.push('--target-profile', safeProfileName(body.targetProfile, 'targetProfile'))
     if (body.overwrite === true) args.push('--overwrite')
     if (body.confirmOverwrite === true) args.push('--confirm-overwrite')
     const run = await runCore(home, args)
@@ -761,6 +868,7 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: object[
       return failure
     }
     const prepared = result as JsonObject
+    if (body.planOnly === true) return { status: 'ok', command: action, exitCode: run.code, result }
     const plan = prepared.plan
     const profileName = plan !== null && typeof plan === 'object' && !Array.isArray(plan) && typeof (plan as JsonObject).profileName === 'string'
       ? (plan as JsonObject).profileName as string
@@ -785,9 +893,9 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: object[
   }
 
   if (action === 'delete-profile') {
-    const profileName = safeName(body.profileName, 'profileName')
+    const profileName = safeProfileName(body.profileName, 'profileName')
     const running = currentRuntime(home)
-    if (running.currentProfile === profileName) {
+    if (running.currentProfile === profileName || openedProfiles(home).includes(profileName)) {
       const error = operationDiagnostic('ACTIVE_PROFILE', 'planning', profileName, `cannot delete the active Profile: ${profileName}`, 'The running DSH process would lose its Profile files.', 'Switch to another Profile first, then delete this Profile.')
       return { status: 'failed', command: action, exitCode: 2, error }
     }
@@ -820,8 +928,24 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: object[
     }
   }
 
+  if (action === 'desktop-control') {
+    const target = safeProfileName(body.profileName, 'profileName')
+    const operation = body.operation
+    if (!['switch', 'default', 'replace'].includes(String(operation))) throw Error('Invalid Desktop operation')
+    if (openedProfiles(home).includes(target)) throw Error('Stop the separately opened environment before using Desktop restart')
+    const result = await desktopControl({ action: operation as 'switch' | 'default' | 'replace', target, makeDefault: body.makeDefault === true, confirm: body.confirmDesktop === true })
+    return { status: 'ok', result }
+  }
+
+  if (action === 'close-profile') {
+    const name = safeProfileName(body.profileName, 'profileName')
+    if (body.confirmClose !== true) throw Error('Closing an environment requires confirmation')
+    await closeOpenedProfile(home, name)
+    return { status: 'ok', result: { status: 'closed', profileName: name } }
+  }
+
   if (action === 'switch-profile') {
-    const profileName = safeName(body.profileName, 'profileName')
+    const profileName = safeProfileName(body.profileName, 'profileName')
     if (body.confirmSwitch !== true) {
       return { status: 'failed', command: action, exitCode: 2, error: operationDiagnostic('SWITCH_CONFIRMATION_REQUIRED', 'planning', profileName, 'switching Profile requires explicit confirmation', 'The current DSH process was not changed.', 'Confirm the switch and retry.') }
     }
@@ -841,6 +965,15 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: object[
         exitCode: 0,
         result: { status: 'already-active', profileName, message: `Profile is already active: ${profileName}`, impact: 'The current DSH process was not changed; the requested Profile is already running.', canContinue: true },
         history: item,
+      }
+    }
+    const desktop = desktopRuntimeRoot()
+    if (desktop) {
+      try {
+        const result = await openProfile(home, profileName, desktop, join(dirname(fileURLToPath(import.meta.url)), '..', 'open-profile-runner.mjs'), workspace.work)
+        return { status: 'ok', command: action, result }
+      } catch (error) {
+        return { status: 'failed', command: action, error: operationDiagnostic('ENVIRONMENT_OPEN_FAILED', 'boot', profileName, failMessage(error), 'The original desktop and other environments were not replaced or restarted.', 'Review the target environment configuration and retry opening it.') }
       }
     }
     if (runtime.restartConfigured !== true || typeof process.argv[1] !== 'string' || typeof runtime.port !== 'number') {
@@ -867,7 +1000,7 @@ async function handleApi(home: string, body: JsonObject, runtimePlugins: object[
   }
 
   if (action === 'verify') {
-    const profileName = safeName(body.profileName, 'profileName')
+    const profileName = safeProfileName(body.profileName, 'profileName')
     const mode = body.mode === undefined ? 'web' : body.mode
     if (mode !== 'web' && mode !== 'headless') throw new Error('mode must be web or headless')
     const prepared = await prepareVerifyArgs(
@@ -927,7 +1060,7 @@ async function handleDownload(home: string, req: IncomingMessage, res: ServerRes
 export const inject = ['webServer', 'connection']
 
 export function apply(ctx: Context, config: WindowsTerminalConfig = {}): void {
-  const home = resolve(process.env.DSH_HOME || process.cwd())
+  const home = resolveHome()
   const terminalRuntime = windowsTerminalRuntime(config)
   if (terminalRuntime) {
     ctx.inject(['sandbox'], (scoped) => {
@@ -962,6 +1095,6 @@ export function apply(ctx: Context, config: WindowsTerminalConfig = {}): void {
         void handleDownload(home, req, res).catch(error => json(res, 404, { status: 'failed', error: { message: failMessage(error) } }))
       },
     })
-    return () => { disposeApi(); disposeDownload() }
+    return () => { disposeApi(); disposeDownload(); closeOpenedProfiles(home) }
   }, 'dsh-crate-web: local Core bridge')
 }

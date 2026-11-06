@@ -7,7 +7,7 @@ from .errors import ExportError
 from .portability import collect, discover
 
 
-def build_plan(profile: Path, *, options, portable_items=None) -> dict[str, Any]:
+def build_plan(profile: Path, *, options, portable_items=None, effective=None) -> dict[str, Any]:
     from .export import (EMBEDDED, REFERENCE_ONLY, PluginExportOptions,
                          _installed_package, _profile_bundles, _profile_dependencies,
                          _read_json_file, _imported_required_secrets)
@@ -25,11 +25,16 @@ def build_plan(profile: Path, *, options, portable_items=None) -> dict[str, Any]
                 bundles.append(name)
             if name in options.plugin_options and name not in names:
                 names.append(name)
-    if not names:
+    if not names and effective is None:
         raise ExportError("Profile has no dependencies or bundles")
     unknown = set(options.plugin_options) - set(names)
     if unknown:
         raise ExportError("plugin selections refer to packages absent from Profile")
+    packages = {}
+    choices = options.plugin_options
+    excluded = set()
+    if effective is not None:
+        names, bundles, packages, choices, excluded = effective
     plugins = []
     dependency_requirements = [
         {"name": "Node.js", "version": options.environment.get("node", {}).get("version", "unknown"),
@@ -40,8 +45,10 @@ def build_plan(profile: Path, *, options, portable_items=None) -> dict[str, Any]
          "reason": "DSH 运行环境不包含在 Crate 中，需要接收方提供并验证。"},
     ]
     for name in names:
-        _, package = _installed_package(profile, name, bundle=name in bundles)
-        selected = options.plugin_options.get(name, PluginExportOptions(
+        package = packages.get(name)
+        if package is None:
+            _, package = _installed_package(profile, name, bundle=name in bundles)
+        selected = choices.get(name, PluginExportOptions(
             mode=EMBEDDED if options.export_mode == "freeze" else REFERENCE_ONLY))
         plugins.append({"name": name, "version": package.get("version", "unknown"),
                         "mode": selected.mode, "required": selected.required})
@@ -80,7 +87,7 @@ def build_plan(profile: Path, *, options, portable_items=None) -> dict[str, Any]
     completeness = {
         "embedded": [p["name"] for p in plugins if p["mode"] == EMBEDDED],
         "referenceOnly": references, "secretNameOnly": secrets,
-        "excluded": [item.get("path", item.get("name")) for item in inventory if item["classification"] == "excluded"],
+        "excluded": sorted(excluded) + [item.get("path", item.get("name")) for item in inventory if item["classification"] == "excluded"],
         "unsupported": unsupported, "hostDependencies": [
             {"name": row["name"], "version": row["version"]}
             for row in dependency_requirements if row["hostProvided"]
