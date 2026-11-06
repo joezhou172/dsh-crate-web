@@ -1,117 +1,62 @@
-name: Publish DSH Crate Web to npm
-
+name: 手动发布 DSH Crate Preview
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
-    paths:
-      - "src/**"
-      - "core/**"
-      - "lib/**"
-      - "skills/**"
-      - "runtime/**"
-      - "package.json"
-      - "cordis.patch.yml"
-      - "*.mjs"
-      - "README*"
-      - "scripts/release_*.py"
-      - "scripts/release_consumer.mjs"
-      - "scripts/npm-release.mjs"
-      - "tests/test_release*.py"
-      - ".github/workflows/publish-dsh-crate-web.yml"
-  pull_request:
-    paths:
-      - "src/**"
-      - "core/**"
-      - "lib/**"
-      - "skills/**"
-      - "runtime/**"
-      - "package.json"
-      - "cordis.patch.yml"
-      - "*.mjs"
-      - "README*"
-      - "scripts/release_*.py"
-      - "scripts/release_consumer.mjs"
-      - "scripts/npm-release.mjs"
-      - "tests/test_release*.py"
-      - ".github/workflows/publish-dsh-crate-web.yml"
   workflow_dispatch:
     inputs:
+      version:
+        description: 已完成本机验收的 Preview 版本
+        required: true
+        type: string
+      sha256:
+        description: 已验收 tgz 的 SHA-256
+        required: true
+        type: string
       publish:
-        description: "实际发布 Preview；关闭时只检查和上传检查制品"
+        description: 实际发布；关闭时仅校验
         required: true
         default: false
         type: boolean
-
 permissions:
   contents: read
-
 concurrency:
-  group: crate-npm-${{ github.event_name == 'pull_request' && github.ref || 'release' }}
+  group: crate-npm-manual-release
   cancel-in-progress: false
-
 jobs:
-  validate-package:
-    name: 检查隐私与最终 npm 制品
+  validate:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    outputs:
-      sha256: ${{ steps.package.outputs.sha256 }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
-          node-version: "24"
-          registry-url: https://registry.npmjs.org
+          node-version: '24'
           package-manager-cache: false
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.14"
-      - name: 校验发布规则
+          python-version: '3.14'
+      - name: 校验输入并下载已验收的发布草稿制品
         env:
-          RELEASE_REF_TYPE: ${{ github.ref_type }}
-          RELEASE_REF_NAME: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          EXPECTED_SHA256: ${{ inputs.sha256 }}
         run: |
-          python scripts/release_policy.py
-          python scripts/generate-skill-reference.py
-          git diff --exit-code -- skills/
-          python scripts/test-local.py --pattern 'test_release*.py'
-          python scripts/test-local.py -- python skills/dsh-crate-troubleshooting/tests/run_tests.py
-      - name: 扫描实际提交；命中只报告位置
-        run: python scripts/release_guard.py git --revision HEAD
-      - name: 生成并检查唯一发布制品
-        id: package
+          python scripts/manual-release.py inputs
+          mkdir -p release
+          gh release download "v${RELEASE_VERSION}" --pattern "dsh-crate-web-${RELEASE_VERSION}.tgz" --dir release
+          python scripts/manual-release.py audit
+      - name: 在空环境普通安装最终制品
         run: |
-          mkdir release
-          npm pack . --ignore-scripts --json --pack-destination ./release > release/npm-pack.json
-          python scripts/release_policy.py --pack-report release/npm-pack.json --output release/audit.json --github-output "$GITHUB_OUTPUT"
-      - name: 最终 tgz 必须可在空环境普通安装
-        run: |
-          node scripts/release_consumer.mjs "$(node -p "'release/' + JSON.parse(require('fs').readFileSync('release/audit.json', 'utf8')).filename")" work/clean-consumer
+          mkdir -p work
+          node scripts/release_consumer.mjs "$(node -p "'release/' + JSON.parse(require('fs').readFileSync('release/audit.json')).filename")" work/clean-consumer
       - uses: actions/upload-artifact@v4
         with:
-          name: crate-npm-preview
+          name: checked-preview
           path: release/
           if-no-files-found: error
           retention-days: 7
-      - name: 保存测试结果与资源观测
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: crate-release-test-observations
-          path: |
-            work/test-observations/
-            work/clean-consumer/report.json
-            work/clean-consumer/stdout.log
-            work/clean-consumer/stderr.log
-          if-no-files-found: ignore
-          retention-days: 7
-
   publish:
-    name: 发布经过检查的 Preview
-    needs: validate-package
-    if: >-
-      (github.event_name == 'push') ||
-      (github.event_name == 'workflow_dispatch' && inputs.publish == true)
+    needs: validate
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish == true
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -120,16 +65,20 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
-          node-version: "24"
+          node-version: '24'
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
       - uses: actions/download-artifact@v4
         with:
-          name: crate-npm-preview
+          name: checked-preview
           path: release
-      - name: 校验哈希并使用 OIDC 发布；已存在的相同制品跳过
+      - name: 使用可信发布，仅更新 preview 标签
         env:
-          EXPECTED_SHA256: ${{ needs.validate-package.outputs.sha256 }}
-          # 私有仓库不支持 npm provenance；这不关闭 OIDC 身份认证。
+          EXPECTED_SHA256: ${{ inputs.sha256 }}
           NPM_CONFIG_PROVENANCE: ${{ github.event.repository.private == false }}
         run: node scripts/npm-release.mjs release
+      - name: 下载注册表制品并核对发布前哈希
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          EXPECTED_SHA256: ${{ inputs.sha256 }}
+        run: node scripts/verify-published-release.mjs
