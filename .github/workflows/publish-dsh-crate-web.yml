@@ -24,6 +24,7 @@ jobs:
   validate:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -33,13 +34,14 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.14'
-      - name: 校验输入并下载已验收的发布草稿制品
+      - name: 校验输入并下载已验收的预发布制品
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_VERSION: ${{ inputs.version }}
           EXPECTED_SHA256: ${{ inputs.sha256 }}
         run: |
+          python -m unittest discover -s tests -p test_manual_release.py
           python scripts/manual-release.py inputs
           mkdir -p release
           gh release download "v${RELEASE_VERSION}" --pattern "dsh-crate-web-${RELEASE_VERSION}.tgz" --dir release
@@ -58,6 +60,7 @@ jobs:
     needs: validate
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish == true
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write
