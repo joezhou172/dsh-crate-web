@@ -24,6 +24,7 @@ ASSIGN = re.compile(rb'''(?i)(?:api[_-]?key|access[_-]?token|auth[_-]?token|pass
 BEARER = re.compile(rb"(?i)Bearer[ \t]+([A-Za-z0-9_./+=-]{24,})")
 FORBIDDEN_PARTS = {"node_modules", "__pycache__", ".git", ".vibe-wise", ".understand-anything", "outputs", "work"}
 WINDOWS_TERMINAL_ROOT = "packaging/windows-terminal/"
+DESKTOP_MANIFEST = "packaging/desktop-bootstrap/manifest.json"
 WINDOWS_TERMINAL_FILES = {WINDOWS_TERMINAL_ROOT + name for name in {
     "build.py", "manifest.json", "README.md",
     "dsh__node_modules__@deepseek-ai__dsh-sandbox-local__lib__index.js.patch",
@@ -137,7 +138,7 @@ def inspect_tarball(path: Path, known_secrets=()):
             allowed = (relative in {"package.json", "README.md", "README.zh-CN.md", "LICENSE", "THIRD-PARTY-LICENSE.txt", "cordis.patch.yml",
                                       "restart-helper.mjs", "verify-desktop.mjs", "desktop-patch-helper.mjs", "runtime-inventory.mjs", "merge-config.mjs", "open-profile-runner.mjs"}
                        or relative in {"lib/index.js", "lib/client.js", "lib/index.d.ts", "lib/client.d.ts"}
-                       or relative in WINDOWS_TERMINAL_FILES
+                       or relative in WINDOWS_TERMINAL_FILES or relative == DESKTOP_MANIFEST
                        or (relative.startswith("core/dsh_pack/") and relative.endswith(".py"))
                        or relative.startswith("runtime/python/")
                        or relative in {"skills/dsh-crate-troubleshooting/SKILL.md", "skills/dsh-crate-troubleshooting/compatibility.json"}
