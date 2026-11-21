@@ -3,7 +3,7 @@ import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 const require = createRequire(join(process.argv[2], 'package.json'))
-const { parseDocument, isMap, isSeq, isAlias, visit } = require('yaml')
+const { parseDocument, isMap, isSeq, isAlias, isScalar, visit } = require('yaml')
 const input = JSON.parse(readFileSync(0, 'utf8'))
 const parse = text => {
   const doc = parseDocument(text, { uniqueKeys: true, customTags: [{ tag: 'tag:yaml.org,2002:js', resolve: value => value }] })
@@ -11,6 +11,40 @@ const parse = text => {
   if (doc.warnings.length) throw Error('配置含不支持的标签，未合并')
   visit(doc, (_, node) => { if (isAlias(node)) throw Error('配置含 YAML 引用，需先展开后合并') })
   return doc
+}
+if (input.operation === 'workspace-model-selectors') {
+  const doc = parse(input.text)
+  const overrides = isMap(doc.contents) && doc.contents.get('overrides', true)
+  const markers = /apiKeyEnv|llm-pi-ai|agent-default-model/
+  const pkg = /^(?:@[a-z0-9._-]+\/)?[a-z0-9][a-z0-9._-]*$/
+  const allowed = new Set()
+  const packageKeys = new Set()
+  if (isMap(overrides)) for (const { key, value } of overrides.items) {
+    if (!isScalar(key) || typeof key.value !== 'string') continue
+    // Only literal npm names in selector position may account for a model marker.
+    const names = key.value.split('>')
+    if (!names.every(name => pkg.test(name) && (!markers.test(name) ||
+        /^@deepseek-ai\/dsh-(?:agent-default-model|llm-pi-ai)$/.test(name)))) continue
+    if (isScalar(value) && typeof value.value === 'string' &&
+        /^(?:-|[~^]?\d+\.\d+\.\d+(?:-[\w.-]+)?)$/.test(value.value)) {
+      if (names.every(name => name.startsWith('@'))) packageKeys.add(key)
+      if (markers.test(key.value)) allowed.add(key)
+    }
+  }
+  let safe = allowed.size > 0
+  visit(doc, (_, node) => {
+    if (node?.tag || node?.anchor) safe = false
+    if (isScalar(node) && !allowed.has(node) && markers.test(String(node.value))) safe = false
+    if (isMap(node) && node.items.some(({ key }) => !packageKeys.has(key) && (!isScalar(key) ||
+        /^(?:providers|baseURL|defaultModel|.*(?:api[_-]?key|password|token|secret|private[_-]?key)|authorization|credentials)$/i.test(String(key.value))))) safe = false
+  })
+  // Check unparsed text too (including comments). Never alter exported bytes.
+  let rest = input.text
+  for (const node of [...allowed].sort((a, b) => b.range[0] - a.range[0])) {
+    rest = rest.slice(0, node.range[0]) + rest.slice(node.range[1])
+  }
+  process.stdout.write(JSON.stringify(safe && !markers.test(rest)))
+  process.exit(0)
 }
 if (input.operation === 'model-api') {
   const doc = parse(input.text)

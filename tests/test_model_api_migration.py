@@ -10,12 +10,39 @@ from dsh_pack.errors import ExportError, PackImportError
 from dsh_pack.importer import ImportOptions, create_import_plan
 from dsh_pack.incremental import plan_incremental
 from dsh_pack.model_api import endpoint, secret_name, validate
-from dsh_pack.export import ExportOptions, export_profile
+from dsh_pack.export import ExportOptions, export_profile, _profile_files
 from dsh_pack.preflight import PreflightContext, inspect_pack
 from test_size_preview import artifact, fixture, ENV
 
 
 class ModelApiBoundaryTests(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("DSH_PACK_CONFIG_MERGE_COMMAND"), "requires host static YAML parser")
+    def test_workspace_model_package_selectors_only(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            root = Path(workspace)
+            (root / "package.json").write_text("{}")
+            path = root / "pnpm-workspace.yaml"
+            selector = "@deepseek-ai/dsh-base>@deepseek-ai/dsh-agent-default-model"
+            for text in (f'overrides: {{"{selector}": "-", "@deepseek-ai/dsh-base>@deepseek-ai/dsh-llm-deepseek-api-key": "-"}}\n',
+                         f"packages: ['.']\noverrides:\n  '{selector}': '1.0.0'\n"):
+                path.write_bytes(text.encode())
+                self.assertEqual(_profile_files(root, root / "out")[path.name], text.encode())
+            safe = f'overrides: {{"{selector}": "-"}}\n'
+            for text in (safe + "row: {id: llm-pi-ai}\n", safe + "apiKeyEnv: PRIVATE_NAME\n",
+                         safe + 'settings: {apiKey: "fake-test-value"}\n',
+                         safe + "EXAMPLE_API_KEY: fake-test-value\n",
+                         safe + 'headers: {Authorization: "Bearer fake-test-value"}\n',
+                         safe + "providers: {internal: {models: []}}\n",
+                         f'overrides: {{"{selector}": {{provider: example}}}}\n',
+                         safe + "overrides: {}\n", safe + 'extra: &dynamic !custom value\n'):
+                path.write_text(text)
+                with self.subTest(text=text), self.assertRaises(ExportError):
+                    _profile_files(root, root / "out")
+            path.unlink()
+            (root / "other.yaml").write_text(safe)
+            with self.assertRaises(ExportError):
+                _profile_files(root, root / "out")
+
     def test_rejects_extra_headers_and_unlisted_default(self):
         provider = {"models": [{"id": "first"}]}
         with self.assertRaises(ExportError):
