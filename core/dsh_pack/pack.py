@@ -116,7 +116,7 @@ def _zip_info(name: str) -> zipfile.ZipInfo:
     return info
 
 
-def create(data: PackData, destination: str | os.PathLike[str]) -> Path:
+def create(data: PackData, destination: str | os.PathLike[str], *, compression: str | None = None) -> Path:
     """Create one `.dshcrate` atomically and return its path.
 
     The manifest integrity table covers every member except `manifest.json`
@@ -128,8 +128,15 @@ def create(data: PackData, destination: str | os.PathLike[str]) -> Path:
     from .portability import validate_inventory
     user_data = _file_map(data.user_data, "user_data", "user-data")
     validate_inventory(manifest, user_data, plugins_lock)
-    lock_bytes = _json_bytes(plugins_lock)
-    entries = _payload_entries(profile_files, lock_bytes, plugin_artifacts)
+    compression = compression or manifest.get("transport", {}).get("mode")
+    if compression:
+        from .compression import encode
+        encoded, transport = encode(plugin_artifacts, plugins_lock, compression)
+        manifest.update(schemaVersion=4, transport=transport)
+        entries = _payload_entries(profile_files, _json_bytes(plugins_lock), {})
+        entries.update(encoded)
+    else:
+        entries = _payload_entries(profile_files, _json_bytes(plugins_lock), plugin_artifacts)
     entries.update({f"user-data/{name}": content for name, content in user_data.items()})
     manifest["integrity"] = {
         "algorithm": "sha256",
@@ -151,7 +158,10 @@ def create(data: PackData, destination: str | os.PathLike[str]) -> Path:
         with zipfile.ZipFile(temp_path, mode="w", compression=zipfile.ZIP_DEFLATED, allowZip64=False) as archive:
             archive.writestr(_zip_info("manifest.json"), manifest_bytes)
             for name, content in entries.items():
-                archive.writestr(_zip_info(name), content)
+                info = _zip_info(name)
+                if name.endswith(".tar.zst"):
+                    info.compress_type = zipfile.ZIP_STORED
+                archive.writestr(info, content)
         os.replace(temp_path, destination_path)
         temp_path = None
     finally:
@@ -188,12 +198,16 @@ def _read_entries(source: Path) -> dict[str, bytes]:
     except (FileNotFoundError, zipfile.BadZipFile, OSError) as error:
         raise PackFormatError(f"cannot open Pack ZIP: {source}") from error
     with archive:
+        from .compression import MAX_FILE, MAX_TOTAL
+        infos = archive.infolist()
+        if len(infos) > 20000 or any(i.file_size > MAX_FILE for i in infos) or sum(i.file_size for i in infos) > MAX_TOTAL:
+            raise PackFormatError("ZIP resource limit exceeded")
         entries: dict[str, bytes] = {}
         for info in archive.infolist():
             if info.is_dir() or info.filename.endswith("/"):
                 raise PathSafetyError(f"directory ZIP members are not allowed: {info.filename!r}")
             name = _validate_archive_member(info.filename)
-            if name in entries:
+            if name.casefold() in {key.casefold() for key in entries}:
                 raise DuplicateEntryError(f"duplicate ZIP member: {name}")
             try:
                 entries[name] = archive.read(info)
@@ -242,6 +256,11 @@ def read(source: str | os.PathLike[str]) -> PackData:
         for name, content in entries.items()
         if name.startswith("plugins/")
     }
+    if manifest["schemaVersion"] == 4:
+        from .compression import decode
+        # Validate structure before trusting any transport paths or sizes.
+        validate_plugins_lock(plugins_lock)
+        plugin_artifacts = decode(entries, manifest["transport"], plugins_lock)
     validate_plugins_lock(
         plugins_lock,
         artifact_paths={f"plugins/{name}" for name in plugin_artifacts},

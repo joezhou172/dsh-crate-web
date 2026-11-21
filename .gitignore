@@ -28,6 +28,11 @@ outputs/
 work_setup_homes.py
 _patch*.py
 
+# Private implementation plans, diagnostics and acceptance evidence
+docs/research/
+docs/verification/
+docs/superpowers/
+
 # 本地测试与发布预演证据
 work/
 release/

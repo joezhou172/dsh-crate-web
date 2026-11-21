@@ -970,6 +970,7 @@ class SubprocessVerifyAdapter:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding='utf-8', errors='backslashreplace',
                 bufsize=1,
             )
             assert self.process.stdout is not None and self.process.stderr is not None
@@ -1072,6 +1073,7 @@ class SubprocessVerifyAdapter:
                 env=self._environment(context),
                 capture_output=True,
                 text=True,
+                encoding='utf-8', errors='backslashreplace',
                 timeout=self._timeout(),
                 check=False,
             )
@@ -1123,6 +1125,7 @@ class SubprocessVerifyAdapter:
                 env=self._environment(context),
                 capture_output=True,
                 text=True,
+                encoding='utf-8', errors='backslashreplace',
                 timeout=self._timeout(),
                 check=False,
             )
@@ -1257,7 +1260,6 @@ class SubprocessVerifyAdapter:
             completed = subprocess.run(
                 ["netstat", "-ano", "-p", "tcp"],
                 capture_output=True,
-                text=True,
                 timeout=10,
                 check=False,
             )
@@ -1267,7 +1269,8 @@ class SubprocessVerifyAdapter:
             return {"checked": False, "portOwnerPid": None, "portBelongsToProcess": False,
                     "ownershipError": "netstat failed", "exitCode": completed.returncode}
         port_owner: int | None = None
-        for line in completed.stdout.splitlines():
+        # 仅解析 ASCII 协议、地址和 PID；本地化标题可能采用 OEM 编码。
+        for line in completed.stdout.decode('ascii', errors='backslashreplace').splitlines():
             fields = line.split()
             if len(fields) < 5 or fields[0].upper() != "TCP" or fields[3].upper() != "LISTENING":
                 continue
@@ -1337,7 +1340,7 @@ class SubprocessVerifyAdapter:
             return _step(f"plugin:{plugin}:{test_name}", "UNTESTED", "no explicit plugin smoke command was supplied", required=True, evidence={"plugin": plugin, "test": test_name})
         command = [self._format(item, context) for item in command]
         try:
-            completed = subprocess.run(command, cwd=str(self.config["cwd"]) if isinstance(self.config.get("cwd"), str) else None, env=self._environment(context), capture_output=True, text=True, timeout=self._timeout(), check=False)
+            completed = subprocess.run(command, cwd=str(self.config["cwd"]) if isinstance(self.config.get("cwd"), str) else None, env=self._environment(context), capture_output=True, text=True, encoding='utf-8', errors='backslashreplace', timeout=self._timeout(), check=False)
         except (OSError, subprocess.TimeoutExpired) as error:
             evidence = {"command": command, "error": str(error)}
             return _step(

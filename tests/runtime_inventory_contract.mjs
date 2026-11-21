@@ -22,10 +22,11 @@ const modules=[await import('../src/index.ts'),await import('../lib/index.js')]
 for (const [index,module] of modules.entries()) {
  for (const broken of [false,true]) {
   process.env.DSH_HOME=join(root,'case-'+index+'-'+broken)
-  const handlers=[]
-  const ctx={loader:{*entries(){yield row;if(broken)throw Error('private failure value')}},
+  const handlers=[], events=[]
+  const ctx={on:(name,handler)=>{events.push({name,handler});return ()=>{}},loader:{*entries(){yield row;if(broken)throw Error('private failure value')}},
    connection:{requestRejection:()=>undefined},effect:fn=>fn(),webServer:{register:r=>{handlers.push(r);return ()=>{}}}}
   module.apply(ctx)
+  assert.equal(events.filter(event=>event.name==='llm-pi-ai/request-headers').length,1)
   const request=Readable.from([Buffer.from('{"action":"profiles"}')]);request.method='POST';request.headers={}
   let response
   const res={writeHead:code=>assert.equal(code,200),end:raw=>{response=JSON.parse(raw)}}

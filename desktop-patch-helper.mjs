@@ -13,6 +13,14 @@ const anchor = join(runtime, 'package.json')
 const require = createRequire(anchor)
 const { parseDocument, isMap, isScalar, isSeq } = require('yaml')
 const boot = await import(pathToFileURL(join(runtime, 'node_modules/@deepseek-ai/dsh-app-boot/lib/index.js')).href)
+// 0.2.2 moved the public catalog out of app-boot. Use the same installed
+// catalog the official composer imports; never invent defaults or mutate it.
+const bundleCatalog = Array.isArray(boot.DEFAULT_PROFILE_BUNDLES) ? boot
+  : await import(pathToFileURL(join(runtime, 'node_modules/@deepseek-ai/dsh-official-bundles/lib/index.js')).href)
+if (!Array.isArray(bundleCatalog.DEFAULT_PROFILE_BUNDLES) || !Array.isArray(bundleCatalog.OPTIONAL_BUNDLES) ||
+    !bundleCatalog.PROFILE_TEMPLATES || typeof bundleCatalog.PROFILE_TEMPLATES !== 'object') {
+  throw new Error('Unsupported official Bundle catalog shape')
+}
 
 function rowsById(rows, result = new Map(), depth = 0) {
   if (depth > 64) throw new Error('patch nesting exceeds adapter limit')
@@ -32,7 +40,23 @@ function hasFilesystemInsert(rows, depth = 0) {
      row.group && Array.isArray(row.config) && hasFilesystemInsert(row.config, depth + 1)))
 }
 
+function retiredBundleEvidence() {
+  const names = bundleCatalog.RETIRED_BUNDLES
+  if (names !== undefined && !(names instanceof Set)) throw new Error('Unsupported retired Bundle catalog shape')
+  const retiredBundles = [...(names ?? [])]
+  if (retiredBundles.some(name => typeof name !== 'string' || !name.startsWith('@deepseek-ai/') ||
+      ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'].includes(name))) throw new Error('Invalid retired Bundle catalog')
+  const catalogPath = Array.isArray(boot.DEFAULT_PROFILE_BUNDLES)
+    ? join(runtime, 'node_modules/@deepseek-ai/dsh-app-boot/lib/index.js')
+    : join(runtime, 'node_modules/@deepseek-ai/dsh-official-bundles/lib/index.js')
+  const runtimeVersion = JSON.parse(readFileSync(join(runtime, 'node_modules/@deepseek-ai/dsh/package.json'), 'utf8')).version
+  return { source: 'official-retired-bundles', runtimeVersion, retiredBundles,
+    catalogSha256: hash(readFileSync(catalogPath)),
+    bootSha256: hash(readFileSync(join(runtime, 'node_modules/@deepseek-ai/dsh-app-boot/lib/index.js'))) }
+}
+
 function main() {
+  if (process.argv[3] === '--retired-bundles') return retiredBundleEvidence()
   const path = join(profile, 'cordis.patch.yml')
   if (!existsSync(path)) return { changed: false, reason: 'no-profile-patch' }
   const original = readFileSync(path)
@@ -45,8 +69,8 @@ function main() {
   const manifest = boot.readProfileManifest('dsh-crate', profile)
   // Retired official Bundles are not in the runtime's current catalog. Avoid
   // loadProfileDirectory here: it can rewrite a manifest to remove them.
-  const catalog = new Set([...boot.DEFAULT_PROFILE_BUNDLES, ...boot.OPTIONAL_BUNDLES,
-    ...Object.values(boot.PROFILE_TEMPLATES).flatMap(template => template.bundles)])
+  const catalog = new Set([...bundleCatalog.DEFAULT_PROFILE_BUNDLES, ...bundleCatalog.OPTIONAL_BUNDLES,
+    ...Object.values(bundleCatalog.PROFILE_TEMPLATES).flatMap(template => template.bundles)])
   const exemptions = boot.readProfileVersionExemptions(profile)
   const layers = []
   for (const name of manifest.dsh?.profile?.bundles ?? []) {

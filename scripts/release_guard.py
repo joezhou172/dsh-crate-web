@@ -25,6 +25,11 @@ BEARER = re.compile(rb"(?i)Bearer[ \t]+([A-Za-z0-9_./+=-]{24,})")
 FORBIDDEN_PARTS = {"node_modules", "__pycache__", ".git", ".vibe-wise", ".understand-anything", "outputs", "work"}
 WINDOWS_TERMINAL_ROOT = "packaging/windows-terminal/"
 DESKTOP_MANIFEST = "packaging/desktop-bootstrap/manifest.json"
+DESKTOP_RUNTIME_FILES = {
+    "desktop-profile-adapter.mjs", "desktop-instances.mjs", "desktop-maintenance.mjs",
+    "scripts/desktop-profile-patch.py", "scripts/desktop-patch-launcher.py", "scripts/desktop-setup-worker.py",
+    "packaging/desktop-bootstrap/builds.json", "packaging/desktop-bootstrap/component.json", DESKTOP_MANIFEST,
+}
 WINDOWS_TERMINAL_FILES = {WINDOWS_TERMINAL_ROOT + name for name in {
     "build.py", "manifest.json", "README.md",
     "dsh__node_modules__@deepseek-ai__dsh-sandbox-local__lib__index.js.patch",
@@ -138,7 +143,7 @@ def inspect_tarball(path: Path, known_secrets=()):
             allowed = (relative in {"package.json", "README.md", "README.zh-CN.md", "LICENSE", "THIRD-PARTY-LICENSE.txt", "cordis.patch.yml",
                                       "restart-helper.mjs", "verify-desktop.mjs", "desktop-patch-helper.mjs", "runtime-inventory.mjs", "merge-config.mjs", "open-profile-runner.mjs"}
                        or relative in {"lib/index.js", "lib/client.js", "lib/index.d.ts", "lib/client.d.ts"}
-                       or relative in WINDOWS_TERMINAL_FILES or relative == DESKTOP_MANIFEST
+                       or relative in WINDOWS_TERMINAL_FILES or relative in DESKTOP_RUNTIME_FILES
                        or (relative.startswith("core/dsh_pack/") and relative.endswith(".py"))
                        or relative.startswith("runtime/python/")
                        or relative in {"skills/dsh-crate-troubleshooting/SKILL.md", "skills/dsh-crate-troubleshooting/compatibility.json"}
@@ -157,7 +162,7 @@ def inspect_tarball(path: Path, known_secrets=()):
                 "restart-helper.mjs", "verify-desktop.mjs", "desktop-patch-helper.mjs", "runtime-inventory.mjs",
                 "runtime/python/python.exe", "runtime/python/python314.zip", "runtime/python/python314._pth",
                 "runtime/python/LICENSE.txt", "THIRD-PARTY-LICENSE.txt"}
-    for missing in sorted(required - payloads.keys()):
+    for missing in sorted((required | DESKTOP_RUNTIME_FILES) - payloads.keys()):
         findings.append({"path": missing, "rule": "missing-required-file"})
     findings.extend(inspect_windows_terminal_assets(payloads))
     pkg = json.loads(payloads.get("package.json", b"{}"))

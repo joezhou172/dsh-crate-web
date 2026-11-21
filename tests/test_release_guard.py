@@ -91,8 +91,9 @@ assert.throws(()=>validateAudit({...audit,filename:'../outside'},hash,hash));
 
     def test_workflow_does_not_publish_pr_or_repack_in_publish_job(self):
         data = (ROOT / ".github/workflows/publish-dsh-crate-web.yml").read_text(encoding="utf-8")
-        self.assertIn("branches: [main]", data)
-        self.assertIn("pull_request:", data)
+        self.assertIn("workflow_dispatch:", data)
+        self.assertNotIn("pull_request:", data)
+        self.assertEqual(data.count("github.ref == 'refs/heads/main'"), 2)
         publish = data.split("\n  publish:\n", 1)[1]
         self.assertNotIn("npm pack", publish)
         self.assertIn("actions/download-artifact@v4", publish)

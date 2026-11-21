@@ -209,6 +209,7 @@ def _export_core_args(args: argparse.Namespace, home: Path) -> list[str]:
     if args.include_installed_bundles:
         argv.append("--include-installed-bundles")
     _append_repeated(argv, "--required-secret", args.required_secret)
+    _append_repeated(argv, "--model-provider", args.model_provider)
     if args.preset != "custom":
         _append_option(argv, "--preset", args.preset)
     _append_option(argv, "--data-selection-json", args.data_selection_json)
@@ -414,6 +415,7 @@ def _build_parser() -> argparse.ArgumentParser:
     export.add_argument("--data-selection-json", help="JSON array of explicitly selected data paths, kinds and owners")
     export.add_argument("--plan-only", action="store_true", help="preview export contents without writing a Crate")
     export.add_argument("--required-secret", action="append", default=[], metavar="NAME")
+    export.add_argument("--model-provider", action="append", default=[], metavar="PROVIDER")
     export.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     export.add_argument("--dsh-home", help="DSH_HOME used for Profile-name resolution and reports")
     export.set_defaults(handler=_run_export)
