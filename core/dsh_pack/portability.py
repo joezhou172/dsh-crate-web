@@ -333,8 +333,8 @@ def validate_inventory(manifest: Mapping[str, Any], files: Mapping[str, bytes], 
         selected[path] = item
     if set(selected) != set(files):
         raise SchemaValidationError("portable data must exactly match its inventory")
-    if files and manifest.get("schemaVersion") not in {2, 3}:
-        raise SchemaValidationError("portable data requires schema version 2 or 3")
+    if files and manifest.get("schemaVersion") not in {2, 3, 4}:
+        raise SchemaValidationError("portable data requires schema version 2, 3 or 4")
     if sum(len(content) for content in files.values()) > MAX_TOTAL_BYTES:
         raise SchemaValidationError("portable data exceeds its total size limit")
     for path, content in files.items():

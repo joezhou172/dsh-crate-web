@@ -1273,6 +1273,7 @@ def import_pack(
     dsh_home: str | os.PathLike[str],
     *,
     options: ImportOptions | None = None,
+    _portable_staging: Path | None = None,
 ) -> ImportResult:
     """Import one Pack as a prepared Profile with an explicit safe mode.
 
@@ -1523,7 +1524,8 @@ def import_pack(
 
         if options.pnpm_command:
             relocate_pnpm_records(temp_profile, plan.profile_path)
-        restore_files(plan.dsh_home, data.user_data, data_created, data_directories)
+        # 外层快照事务先在私有目录准备会话，待 Profile 就绪后统一提交。
+        restore_files(_portable_staging or plan.dsh_home, data.user_data, data_created, data_directories)
         pack_digest = sha256_bytes(plan.pack_path.read_bytes())
         final_profile = plan.profile_path
         if final_profile.exists():
