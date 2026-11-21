@@ -3,6 +3,10 @@ from __future__ import annotations
 import gzip
 import hashlib
 import io
+import os
+from pathlib import Path
+import subprocess
+import sys
 from .errors import PackFormatError, IntegrityError
 
 MAX_FILE = 128 * 1024 * 1024
@@ -11,6 +15,29 @@ MODES = {"fast": 9, "compact": 19}
 
 def digest(value):
     return hashlib.sha256(value).hexdigest()
+
+def _bundled_compressor():
+    if sys.platform == "win32":
+        runtime = Path(__file__).resolve().parents[2] / "runtime/python/python.exe"
+        if runtime.is_file() and not runtime.samefile(sys.executable):
+            return runtime
+    return None
+
+def _install_gzip(raw, runtime=None):
+    if runtime is None:
+        return gzip.compress(raw, compresslevel=6, mtime=0)
+    # zlib and zlib-ng need not produce identical DEFLATE streams. Use only
+    # the package's own runtime; pack data crosses this boundary as stdin.
+    command = "import gzip, sys; sys.stdout.buffer.write(gzip.compress(sys.stdin.buffer.read(), compresslevel=6, mtime=0))"
+    try:
+        return subprocess.run(
+            [str(runtime), "-I", "-S", "-B", "-c", command], input=raw,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True,
+            env={k: v for k, v in os.environ.items() if k.upper() == "SYSTEMROOT"},
+            cwd=runtime.parent, timeout=120, creationflags=subprocess.CREATE_NO_WINDOW,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as error:
+        raise PackFormatError("bundled gzip compressor could not reconstruct install artifact") from error
 
 def zstd_module():
     try:
@@ -63,7 +90,7 @@ def encode(artifacts, lock, mode):
         total += len(raw)
         if len(raw) > MAX_FILE or total > MAX_TOTAL:
             raise PackFormatError("artifact resource limit exceeded")
-        install = gzip.compress(raw, compresslevel=6, mtime=0)
+        install = _install_gzip(raw, _bundled_compressor())
         encoded = zstd.compress(raw, level=MODES[mode])
         logical = "plugins/" + name
         path = logical + ".tar.zst"
@@ -102,8 +129,15 @@ def decode(entries, transport, lock):
             raise PackFormatError("invalid Zstd artifact: " + logical) from error
         if digest(raw) != row["tarSha256"]:
             raise IntegrityError("tar identity mismatch: " + logical)
-        install = gzip.compress(raw, compresslevel=6, mtime=0)
-        if digest(install) != row["installSha256"] or digest(install) != expected[logical]:
+        if row["installSha256"] != expected[logical]:
             raise IntegrityError("install identity mismatch: " + logical)
+        install = _install_gzip(raw)
+        if digest(install) != expected[logical]:
+            runtime = _bundled_compressor()
+            if runtime is None:
+                raise IntegrityError("install identity mismatch: " + logical)
+            install = _install_gzip(raw, runtime)
+            if digest(install) != expected[logical]:
+                raise IntegrityError("install identity mismatch: " + logical)
         result[logical[len("plugins/"):]] = install
     return result
