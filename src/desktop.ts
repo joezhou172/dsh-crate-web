@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path'
 
 export function desktopRuntimeRoot(argv = process.argv): string | undefined {
   const entry = (argv[1] ?? '').replaceAll('\\', '/')
+  if (entry.endsWith('/open-profile-runner.mjs') && process.env.DSH_CRATE_DESKTOP_RUNTIME) return resolve(process.env.DSH_CRATE_DESKTOP_RUNTIME)
   return entry.includes('/@deepseek-ai/dsh-desktop-host/') && argv[2]
     ? resolve(argv[2]) : undefined
 }
@@ -20,11 +21,14 @@ export function desktopRuntimeVersion(): string | undefined {
 }
 
 export function rejectRequest(connection: { requestRejection(request: unknown): number | undefined } | undefined,
-  req: unknown, res: { writeHead(status: number): unknown; end(): unknown }): boolean {
+  req: unknown, res: { writeHead(status: number, headers?: Record<string, string>): unknown; end(body?: string): unknown }): boolean {
   const status = connection?.requestRejection(req) ?? (connection ? undefined : 503)
   if (status === undefined) return false
-  res.writeHead(status)
-  res.end()
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+  res.end(JSON.stringify({ status: 'failed', error: {
+    code: status === 503 ? 'SERVICE_NOT_READY' : 'REQUEST_REJECTED', stage: 'request-validation', httpStatus: status,
+    message: status === 503 ? 'DSH connection service is not ready' : 'DSH rejected the request',
+  }, automaticRetry: false }))
   return true
 }
 

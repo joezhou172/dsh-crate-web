@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "desktop-multiversion-bootstrap-3",
+  "url": "https://github.com/joezhou172/dsh-crate-web/releases/download/v0.1.2-preview.20/desktop-multiversion-bootstrap-3.json",
+  "sha256": "fe47c564390f3e8a60e104a4057da9d0549f1cc25bddbc074aa97cd50df9a4b6",
+  "maxBytes": 2097152,
+  "files": [
+    "desktop-profile-adapter.mjs",
+    "desktop-instances.mjs",
+    "desktop-maintenance.mjs",
+    "scripts/desktop-profile-patch.py",
+    "scripts/desktop-patch-launcher.py",
+    "scripts/desktop-setup-worker.py",
+    "packaging/desktop-bootstrap/builds.json"
+  ],
+  "supportedBuilds": {
+    "0.2.1-rc.5": "e1b6f25fa937da98086c3e77af77aa14791105963c4d337a1c42179d232c6915",
+    "0.2.2-rc.1": "5fa8a6b21bceb8f3e99e30efa2270efd0cc773a11e42aa0488f804a64b34e637",
+    "0.2.2-rc.3": "14cfd81c9135bf0afb89417543c94f9ecfe09266574452a9b106890c698725ae"
+  }
+}

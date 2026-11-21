@@ -56,6 +56,17 @@ async function main() {
     const installed = join(root, 'consumer/node_modules/dsh-crate-web')
     const pkg = JSON.parse(await readFile(join(installed, 'package.json'), 'utf8'))
     assert.equal(pkg.name, 'dsh-crate-web')
+    const desktopRoot = join(installed, 'packaging/desktop-bootstrap')
+    const desktopManifest = JSON.parse(await readFile(join(desktopRoot, 'manifest.json'), 'utf8'))
+    const componentBytes = await readFile(join(desktopRoot, 'component.json'))
+    assert.equal(createHash('sha256').update(componentBytes).digest('hex'), desktopManifest.sha256)
+    const component = JSON.parse(componentBytes)
+    assert.equal(component.id, desktopManifest.id)
+    assert.deepEqual(Object.keys(component.files).sort(), [...desktopManifest.files].sort())
+    for (const file of desktopManifest.files) {
+      assert(!file.includes('..') && /^[\w.-]+(?:\/[\w.-]+)*$/.test(file))
+      assert.deepEqual(await readFile(join(installed, file)), Buffer.from(component.files[file], 'base64'))
+    }
     const terminalRoot = join(installed, 'packaging/windows-terminal')
     const terminalManifest = JSON.parse(await readFile(join(terminalRoot, 'manifest.json'), 'utf8'))
     assert.equal(terminalManifest.schemaVersion, 1)

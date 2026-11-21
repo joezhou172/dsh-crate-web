@@ -5,3 +5,9 @@ core/dsh_pack/**/*.pyc
 core/dsh_pack/**/*.pyo
 *.log
 .DS_Store
+
+# Private development records are not package documentation
+docs/research/
+docs/verification/
+docs/superpowers/
+outputs/
