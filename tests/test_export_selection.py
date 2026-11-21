@@ -90,6 +90,57 @@ class ExportSelectionTests(unittest.TestCase):
                 record["transportBytes"]=len(e[record["path"]]); record["transportSha256"]=hashlib.sha256(e[record["path"]]).hexdigest()
             with self.subTest(change=change), self.assertRaises(DshPackError): decode(e,t,lock)
 
+    def _export_conversation(self, mode):
+        relative = "sessions/project/session-example/session.v4.jsonl"
+        transcript = self.profile.parent.parent / relative
+        transcript.parent.mkdir(parents=True, exist_ok=True)
+        header = {"type": "session", "version": 4, "id": "session-example",
+                  "createdAt": 0, "isSeeded": False, "delegationDepth": 0}
+        transcript.write_bytes((json.dumps(header) + "\n").encode())
+        selection = {"path": relative, "kind": "conversation",
+                     "owner": "@deepseek-ai/dsh-session-persistence-jsonl"}
+        options = ExportOptions(environment=ENV, export_mode="freeze", compression=mode,
+                                data_selection=(selection,))
+        result = export_profile(self.profile, self.root / f"{mode}.dshcrate", options=options)
+        return result.path, relative, transcript.read_bytes()
+
+    def test_compressed_pack_preserves_selected_conversation(self):
+        for mode in ("fast", "compact"):
+            with self.subTest(mode=mode):
+                path, relative, content = self._export_conversation(mode)
+                pack = read(path)
+                self.assertEqual(pack.manifest["schemaVersion"], 4)
+                self.assertEqual(pack.user_data, {relative: content})
+
+    def test_protected_conversation_rollback_retry_and_collision(self):
+        from dsh_pack.importer import ImportOptions
+        from dsh_pack.incremental import protected_import
+        from dsh_pack.snapshot import Snapshot
+        path, relative, content = self._export_conversation("fast")
+        home = self.root / "destination"
+        profile = home / "profiles/moved"
+        metadata = home / ".dsh-pack/imports/moved"
+        options = ImportOptions(current_environment=ENV, target_profile_name="moved")
+        commit = Snapshot.commit
+
+        def fail_metadata(saved, prepared):
+            if saved.target == metadata:
+                self.assertEqual((home / relative).read_bytes(), content)
+                raise OSError("controlled metadata failure")
+            commit(saved, prepared)
+
+        with patch.object(Snapshot, "commit", fail_metadata), self.assertRaises(DshPackError):
+            protected_import(path, home, options)
+        self.assertFalse((home / "sessions").exists())
+        self.assertFalse(profile.exists())
+        self.assertFalse(metadata.exists())
+        protected_import(path, home, options)
+        self.assertEqual((home / relative).read_bytes(), content)
+        with self.assertRaises(DshPackError):
+            protected_import(path, home, ImportOptions(current_environment=ENV, target_profile_name="another"))
+        self.assertEqual((home / relative).read_bytes(), content)
+        self.assertFalse((home / "profiles/another").exists())
+
     def test_new_codec_preflight_uses_decoded_artifacts(self):
         from dsh_pack.preflight import inspect_pack, PreflightContext
         result=export_profile(self.profile,self.root/"new.dshcrate",options=ExportOptions(environment=ENV,export_mode="freeze",compression="fast"))

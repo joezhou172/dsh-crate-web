@@ -1,6 +1,6 @@
 # 版本状态
 
-当前预览版：`dsh-crate-web@0.1.2-preview.20`。安装与功能见 [README](../README.md)。
+当前预览版：`dsh-crate-web@0.1.2-preview.21`。安装与功能见 [README](../README.md)。
 
 ## 功能范围
 

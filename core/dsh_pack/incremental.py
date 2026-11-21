@@ -331,9 +331,11 @@ def recover_interrupted(home, name):
             continue
         for root in reversed(transaction['snapshots']):
             Snapshot.reopen(home, root).rollback()
+        _rollback_sessions(home, path, transaction)
         _cleanup_stage(home, transaction)
         transaction['status'] = 'restored'
         save_json(path, transaction)
+        _discard_session_stage(path, transaction)
 
 
 @contextmanager
@@ -437,6 +439,69 @@ def preserve_local_files(target, prepared):
     visit(target, prepared)
 
 
+def _session_paths(home, journal, relative):
+    from .portability import _inside, _session_generation
+    parts = relative.split('/')
+    if len(parts) != 4 or parts[0] != 'sessions' or _session_generation(parts[-1]) is None:
+        raise ValueError('unexpected session path')
+    stage = _inside(journal.parent, 'session-stage/' + relative)
+    return stage, _inside(Path(home).resolve(), relative)
+
+
+def _publish_sessions(home, journal, transaction):
+    from .snapshot import save_json
+    for relative, digest in transaction.get('sessionFiles', {}).items():
+        stage, target = _session_paths(home, journal, relative)
+        if sha256_bytes(stage.read_bytes()) != digest:
+            raise ValueError('staged session hash mismatch')
+        for parent in reversed(target.parents):
+            if not parent.is_relative_to(Path(home).resolve()) or parent.exists():
+                continue
+            try:
+                parent.mkdir()
+            except FileExistsError:
+                if parent.is_dir() and not parent.is_symlink() and not parent.is_junction():
+                    continue
+                raise
+            info = parent.stat()
+            transaction.setdefault('sessionDirs', {})[parent.relative_to(Path(home).resolve()).as_posix()] = [info.st_dev, info.st_ino]
+            save_json(journal, transaction)
+        # 原子创建；目标已存在即失败。暂存文件也为中断恢复提供文件身份。
+        stage, target = _session_paths(home, journal, relative)
+        os.link(stage, target)
+
+
+def _rollback_sessions(home, journal, transaction):
+    import errno
+    from .portability import _inside
+    root = Path(home).resolve()
+    allowed_dirs = set()
+    for relative, digest in transaction.get('sessionFiles', {}).items():
+        stage, target = _session_paths(home, journal, relative)
+        allowed_dirs.update(p for p in target.parents if p != root and p.is_relative_to(root))
+        if stage.exists() and target.exists() and stage.samefile(target):
+            if sha256_bytes(target.read_bytes()) != digest:
+                raise ValueError('session changed after publication; retained for recovery')
+            target.unlink()
+    for relative, identity in sorted(transaction.get('sessionDirs', {}).items(), key=lambda row: -row[0].count('/')):
+        directory = _inside(root, relative)
+        if directory not in allowed_dirs:
+            raise ValueError('unexpected session directory in transaction')
+        if directory.exists():
+            info = directory.stat()
+            if [info.st_dev, info.st_ino] == identity:
+                try:
+                    directory.rmdir()
+                except OSError as error:
+                    if error.errno not in {errno.ENOTEMPTY, errno.EEXIST}:
+                        raise
+
+
+def _discard_session_stage(journal, transaction):
+    if transaction.get('sessionFiles'):
+        shutil.rmtree(journal.parent / 'session-stage', ignore_errors=True)
+
+
 def _protected_import(source, home, options):
     """新建/覆盖导入也先快照；含 Home 数据的包不能绕过快照覆盖范围。"""
     from .pack import read
@@ -445,8 +510,10 @@ def _protected_import(source, home, options):
     from dataclasses import replace
     import uuid
     plan = create_import_plan(source, home, options=options)
-    if read(source).user_data:
-        raise PackImportError('该包包含 Home 数据，当前快照仅覆盖 Profile，请先导入仅插件包',
+    data = read(source)
+    if data.user_data and (plan.overwrite or any(item.get('kind') != 'conversation' for item in
+            data.manifest['dataInventory'] if item['classification'] == 'portable')):
+        raise PackImportError('快照导入仅支持通过新建 Profile 恢复会话数据',
                               stage='snapshot', code='SNAPSHOT_HOME_DATA_UNSUPPORTED')
     if options.overwrite_existing_profile and options.overwrite_confirmation != 'OVERWRITE':
         raise PackImportError('覆盖需要确认', stage='planning', code='OVERWRITE_CONFIRMATION_REQUIRED')
@@ -456,19 +523,26 @@ def _protected_import(source, home, options):
     metadata_snapshot = Snapshot(Path(home), plan.metadata_path)
     journal = snapshot.root / 'transaction.json'
     transaction = {'status': 'active', 'target': plan.profile_name, 'snapshots': [str(snapshot.root), str(metadata_snapshot.root)], 'maintenanceJob': os.environ.get('DSH_PACK_MAINTENANCE_JOB')}
+    if data.user_data:
+        transaction['sessionFiles'] = {path: sha256_bytes(content) for path, content in data.user_data.items()}
     save_json(journal, transaction)
     try:
         stage_name = 'crate-stage-' + uuid.uuid4().hex
-        prepared = import_pack(source, home, options=replace(options, target_profile_name=stage_name,
-                               overwrite_existing_profile=False, overwrite_confirmation=None))
+        prepared = import_pack(source, home, _portable_staging=snapshot.root / 'session-stage',
+                               options=replace(options, target_profile_name=stage_name,
+                                               overwrite_existing_profile=False, overwrite_confirmation=None))
         _remember_stage(journal, transaction, prepared, stage_name)
+        if set(prepared.plan.portable_data) != set(data.user_data):
+            raise ValueError('portable data selection changed during import')
         if options.pnpm_command:
             relocate_pnpm_records(prepared.profile_path, plan.profile_path)
         finalize_metadata(prepared.metadata_path, plan.profile_path)
         snapshot.commit(prepared.profile_path)
+        _publish_sessions(home, journal, transaction)
         metadata_snapshot.commit(prepared.metadata_path)
         transaction['status'] = 'complete'
         save_json(journal, transaction)
+        _discard_session_stage(journal, transaction)
         result = prepared.as_dict()
         result.update(profilePath=str(plan.profile_path), metadataPath=str(plan.metadata_path), plan=plan.as_dict(),
                       snapshot={'profile': str(snapshot.root), 'metadata': str(metadata_snapshot.root), 'status': 'retained'})
@@ -481,11 +555,14 @@ def _protected_import(source, home, options):
             except Exception as recovery:
                 failures.append(str(recovery))
         try:
+            _rollback_sessions(home, journal, transaction)
             _cleanup_stage(home, transaction)
         except Exception as failure:
             failures.append(str(failure))
         transaction['status'] = 'recovery-failed' if failures else 'restored'
         save_json(journal, transaction)
+        if not failures:
+            _discard_session_stage(journal, transaction)
         raise PackImportError('导入失败，已恢复导入前状态' if not failures else '导入失败，恢复未完成', stage='rollback',
                               code='IMPORT_ROLLED_BACK' if not failures else 'ROLLBACK_FAILED',
                               details={'snapshot': str(snapshot.root), 'originalError': error.as_dict() if isinstance(error, PackImportError) else str(error),
