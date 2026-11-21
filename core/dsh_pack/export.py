@@ -444,6 +444,19 @@ def _profile_bundles(profile_manifest: Mapping[str, Any]) -> list[str]:
     return list(bundles)
 
 
+def _workspace_model_selectors(content: bytes) -> bool:
+    command = os.environ.get("DSH_PACK_CONFIG_MERGE_COMMAND")
+    if not command or len(content) > 4 * 1024 * 1024:
+        return False
+    try:
+        request = {"operation": "workspace-model-selectors", "text": content.decode("utf-8-sig")}
+        result = subprocess.run(json.loads(command), input=json.dumps(request).encode(),
+                                capture_output=True, timeout=30, env=dict(os.environ, ELECTRON_RUN_AS_NODE="1"))
+        return result.returncode == 0 and result.stdout == b"true"
+    except (ValueError, OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def _profile_files(profile_dir: Path, destination: Path, model_patch=None) -> dict[str, bytes]:
     result: dict[str, bytes] = {}
     resolved_destination = destination.resolve()
@@ -473,7 +486,8 @@ def _profile_files(profile_dir: Path, destination: Path, model_patch=None) -> di
         if key != "cordis.patch.yml" and (key.casefold().startswith("cordis.patch.yml.") or
                 (key.lower().endswith((".yaml", ".yml", ".json", ".bak")) and
                  any(token in content for token in (b"apiKeyEnv", b"llm-pi-ai", b"agent-default-model"))
-                 and relative_path.name not in {"package.json", "pnpm-lock.yaml", "package-lock.json"})):
+                 and relative_path.name not in {"package.json", "pnpm-lock.yaml", "package-lock.json"}
+                 and not (key == "pnpm-workspace.yaml" and _workspace_model_selectors(content)))):
             raise ExportError("Model configuration outside the supported Profile patch; remove it before export")
         validate_payload_key(key, "profile", "Profile files")
         result[key] = content
