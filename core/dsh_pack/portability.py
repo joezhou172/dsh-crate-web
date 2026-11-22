@@ -346,6 +346,18 @@ def validate_inventory(manifest: Mapping[str, Any], files: Mapping[str, bytes], 
         _validate_data(content, item)
 
 
+def check_snapshot_storage(manifest: Mapping[str, Any]) -> None:
+    paths = [item["path"] for item in manifest.get("dataInventory", [])
+             if item["classification"] == "portable" and item["kind"] != "conversation"]
+    if paths:
+        next_step = "请在源环境取消勾选这些存储文件，再重新导出。"
+        raise PackImportError(
+            f"快照导入暂不支持普通插件存储（{len(paths)} 项）。{next_step}",
+            stage="planning", code="SNAPSHOT_HOME_DATA_UNSUPPORTED",
+            details={"item": paths[0], "paths": paths, "suggestedNextStep": next_step},
+        )
+
+
 def check_targets(home: Path, files: Mapping[str, bytes], *, overwrite: bool = False) -> None:
     if files and overwrite:
         raise PackImportError("portable Home data requires a new Profile", stage="planning",

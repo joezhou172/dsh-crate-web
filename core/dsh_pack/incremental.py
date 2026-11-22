@@ -509,10 +509,11 @@ def _protected_import(source, home, options):
     from .snapshot import Snapshot, save_json
     from dataclasses import replace
     import uuid
+    from .portability import check_snapshot_storage
     plan = create_import_plan(source, home, options=options)
     data = read(source)
-    if data.user_data and (plan.overwrite or any(item.get('kind') != 'conversation' for item in
-            data.manifest['dataInventory'] if item['classification'] == 'portable')):
+    check_snapshot_storage(data.manifest)
+    if data.user_data and plan.overwrite:
         raise PackImportError('快照导入仅支持通过新建 Profile 恢复会话数据',
                               stage='snapshot', code='SNAPSHOT_HOME_DATA_UNSUPPORTED')
     if options.overwrite_existing_profile and options.overwrite_confirmation != 'OVERWRITE':

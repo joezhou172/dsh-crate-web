@@ -268,7 +268,7 @@ def _run_inspect(args: argparse.Namespace) -> int:
             allow_network_reference_install=context.allow_network_reference_install,
             allow_environment_difference=context.allow_environment_difference,
         )
-    result = inspect_pack(args.pack, context=context)
+    result = inspect_pack(args.pack, context=context, snapshot_import=True)
     if args.json:
         from .partial_import import result_report
         payload = {**result.as_dict(), "compatibility": getattr(args, 'compatibility', None)}
@@ -368,7 +368,12 @@ def _run_import(args: argparse.Namespace) -> int:
     from .version_choices import check_existing, choice_report
     from .pack import read
     try:
-        check_existing(read(args.pack), args.dsh_home, args.target_profile, args.incremental)
+        data = read(args.pack)
+        if not args.incremental:
+            from .portability import check_snapshot_storage
+            check_snapshot_storage(data.manifest)
+        check_existing(data, args.dsh_home, args.target_profile, args.incremental)
+        del data  # 后续适配和导入会重新读包，及时释放已解压的制品。
     except (DshPackError, ValueError, OSError) as error:
         _emit({'status': 'failed', 'error': error.as_dict() if isinstance(error, PackImportError) else {'message': str(error)}}, args.command)
         return 1
