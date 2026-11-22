@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import time
 import uuid
@@ -53,7 +54,7 @@ def save_json(path, value):
 
 class Snapshot:
     """快照校验后才能提交；原目录通过同卷重命名保留，恢复也使用重命名。"""
-    def __init__(self, home: Path, target: Path):
+    def __init__(self, home: Path, target: Path, *, return_new_to_stage: bool = False):
         self.home = home.resolve()
         self.target = target
         if target.parent.resolve() not in {self.home / 'profiles', self.home / '.dsh-pack' / 'imports'} or target.is_symlink() or target.is_junction():
@@ -64,6 +65,8 @@ class Snapshot:
                 raise PackImportError("快照目录不能重定向", stage="snapshot", code="SNAPSHOT_UNSAFE_PATH")
         self.before = inventory(target)
         self.state = {"status": "preparing", "target": str(target), "before": self.before}
+        if return_new_to_stage and self.before is None:
+            self.state["returnNewToStage"] = True
         self.root.mkdir(parents=True, exist_ok=False)
         self.journal = self.root / 'journal.json'
         save_json(self.journal, self.state)
@@ -111,7 +114,16 @@ class Snapshot:
             elif self.before is None and self.target.exists():
                 if self.state.get('status') not in {'committing', 'committed', 'recovery-failed'} or inventory(self.target) != self.state.get('preparedInventory'):
                     raise OSError('目标不是本事务提交的目录，保留现场以免覆盖其他修改')
-                self.target.rename(self.root / ('failed-' + uuid.uuid4().hex))
+                if self.state.get('returnNewToStage'):
+                    # 外层事务已记录暂存目录的文件身份，交回由其校验并清理。
+                    stage = Path(self.state['prepared'])
+                    if (stage.parent != self.target.parent or stage == self.target
+                            or not re.fullmatch(r'crate-stage-[0-9a-f]{32}', stage.name)
+                            or os.path.lexists(stage)):
+                        raise OSError('暂存位置已变化，无法安全回滚')
+                    self.target.rename(stage)
+                else:
+                    self.target.rename(self.root / ('failed-' + uuid.uuid4().hex))
             if inventory(self.target) != self.before:
                 raise OSError('恢复后校验不一致')
             self.state['status'] = 'restored'

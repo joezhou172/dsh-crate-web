@@ -10,7 +10,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Mapping
 
-from .errors import DshPackError, IntegrityError, PackImportError, SchemaValidationError, _default_checks
+from .errors import DshPackError, IntegrityError, SchemaValidationError, _default_checks
 from .network import network_source_details
 from .identity import expected_install_version, unknown_source
 from .pack import _read_entries, sha256_bytes
@@ -356,7 +356,7 @@ def inspect_pack(
     source: str | os.PathLike[str],
     *,
     context: PreflightContext | None = None,
-    snapshot_import: bool = False,
+    snapshot_import: bool = False,  # 保留已有调用方的关键字；快照导入现支持全部合法存储布局。
 ) -> PreflightResult:
     """Inspect one Pack without installing, extracting, or modifying anything."""
 
@@ -390,14 +390,8 @@ def inspect_pack(
 
     try:
         validate_manifest(manifest, require_integrity=True)
-        from .portability import check_snapshot_storage, validate_inventory
+        from .portability import validate_inventory
         validate_inventory(manifest, {name[len("user-data/"):]: content for name, content in entries.items() if name.startswith("user-data/")}, lock)
-        if snapshot_import:
-            check_snapshot_storage(manifest)
-    except PackImportError as error:
-        findings.append(_finding("BLOCKER", error.code, str(error), stage=error.stage,
-                                 item=error.details["item"], paths=error.details["paths"],
-                                 suggested_next_step=error.details["suggestedNextStep"]))
     except DshPackError as error:
         findings.append(_finding("BLOCKER", "SCHEMA_ERROR", str(error)))
 

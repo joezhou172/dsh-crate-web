@@ -1517,14 +1517,20 @@ def import_pack(
                     raise
                 _cleanup(temp_profile)
                 temp_profile = None
-                return import_pack(source_path, home_path, options=replace(options,
+                return import_pack(source_path, home_path, _portable_staging=_portable_staging, options=replace(options,
                     unavailable_plugins={**options.unavailable_plugins, **rejected}))
         installed = [_verify_identity(temp_profile, plugin) for plugin in lock_plugins
                      if str(plugin["name"]) in installed_names]
 
         if options.pnpm_command:
             relocate_pnpm_records(temp_profile, plan.profile_path)
-        # 外层快照事务先在私有目录准备会话，待 Profile 就绪后统一提交。
+        for item in data.manifest.get("dataInventory", []):
+            if (item["classification"] == "portable" and item["kind"] != "conversation"
+                    and item["owner"] not in installed_names):
+                raise PackImportError("存储所属插件未安装，无法恢复其数据", stage="prepare",
+                                      code="PORTABLE_STORAGE_OWNER_MISSING",
+                                      details={"item": item["path"], "plugin": item["owner"]})
+        # 外层快照事务先暂存 Home 数据，待 Profile 就绪后统一提交。
         restore_files(_portable_staging or plan.dsh_home, data.user_data, data_created, data_directories)
         pack_digest = sha256_bytes(plan.pack_path.read_bytes())
         final_profile = plan.profile_path

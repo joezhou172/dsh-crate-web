@@ -187,12 +187,21 @@ def _logical_session(content: bytes, path: str) -> bytes:
     return decoded
 
 
+def portable_layout(path: str) -> str | None:
+    parts = path.split("/")
+    if len(parts) == 2 and parts[0] == "storages" and parts[1].endswith(".json"):
+        return "storage"
+    if len(parts) == 4 and parts[0] == "sessions" and _session_generation(parts[-1]) is not None:
+        return "conversation"
+    return None
+
+
 def _validate_data(content: bytes, item: Mapping[str, Any]) -> None:
     path, kind = item["path"], item["kind"]
     parts = path.split("/")
     if kind == "conversation":
         generation = _session_generation(parts[-1])
-        if len(parts) != 4 or parts[0] != "sessions" or generation is None:
+        if portable_layout(path) != "conversation":
             raise ExportError("unsupported session layout; select a project/session transcript")
         logical = _logical_session(content, path)
         assert_private_values_absent(logical, path)
@@ -217,7 +226,7 @@ def _validate_data(content: bytes, item: Mapping[str, Any]) -> None:
         if len(rows) < 2 or not isinstance(rows[-1], dict) or rows[-1].get("type") != "turn/end":
             raise ExportError("session has no completed turn; stop it before export")
     else:
-        if len(parts) != 2 or parts[0] != "storages" or not parts[1].endswith(".json"):
+        if portable_layout(path) != "storage":
             raise ExportError("only explicitly owned JSON storage units are supported")
         assert_private_values_absent(content, path)
         try:
@@ -344,18 +353,6 @@ def validate_inventory(manifest: Mapping[str, Any], files: Mapping[str, bytes], 
         if type(item["bytes"]) is not int or item["bytes"] != len(content) or item["sha256"] != _hash(content):
             raise SchemaValidationError("portable data identity mismatch")
         _validate_data(content, item)
-
-
-def check_snapshot_storage(manifest: Mapping[str, Any]) -> None:
-    paths = [item["path"] for item in manifest.get("dataInventory", [])
-             if item["classification"] == "portable" and item["kind"] != "conversation"]
-    if paths:
-        next_step = "请在源环境取消勾选这些存储文件，再重新导出。"
-        raise PackImportError(
-            f"快照导入暂不支持普通插件存储（{len(paths)} 项）。{next_step}",
-            stage="planning", code="SNAPSHOT_HOME_DATA_UNSUPPORTED",
-            details={"item": paths[0], "paths": paths, "suggestedNextStep": next_step},
-        )
 
 
 def check_targets(home: Path, files: Mapping[str, bytes], *, overwrite: bool = False) -> None:
