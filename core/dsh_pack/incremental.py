@@ -25,7 +25,11 @@ def merge_configuration(name, target, source, mode, command=None):
     if target == source:
         return target
     if name.endswith('.json'):
-        return json.dumps(merge_json(json.loads(target), json.loads(source), mode), ensure_ascii=False, indent=2).encode()
+        previous = json.loads(target)
+        merged = merge_json(previous, json.loads(source), mode)
+        if mode == 'add' and merged == previous:
+            return target
+        return json.dumps(merged, ensure_ascii=False, indent=2).encode()
     if name.endswith(('.yml', '.yaml')):
         if not command:
             raise PackImportError('此配置需要宿主 YAML 合并器', stage='planning', code='CONFIG_MERGER_UNAVAILABLE', details={'item': name})
@@ -38,12 +42,29 @@ def merge_configuration(name, target, source, mode, command=None):
     return target if mode == 'add' else source
 
 
-def merge_packs(target: PackData, source: PackData, mode: str, command=None):
+def merge_packs(target: PackData, source: PackData, mode: str, command=None, *, storage_to_add=None):
     if mode not in {'add', 'update'}:
         raise ValueError('invalid incremental mode')
-    if source.user_data:
-        raise PackImportError('增量导入暂不合并 Home 数据，请使用仅插件包', stage='planning', code='INCREMENTAL_HOME_DATA_UNSUPPORTED')
+    from .portability import portable_layout
+    if source.user_data and (mode != 'add' or any(portable_layout(path) != 'storage' for path in source.user_data)):
+        raise PackImportError('增量仅新增只支持普通插件存储；会话及存储更新请使用新环境',
+                              stage='planning', code='INCREMENTAL_HOME_DATA_UNSUPPORTED')
     merged = copy.deepcopy(target)
+    additions = set(source.user_data if storage_to_add is None else storage_to_add)
+    storage = []
+    for item in source.manifest.get('dataInventory', []):
+        if item['classification'] != 'portable':
+            continue
+        path = item['path']
+        storage.append({'path': path, 'action': 'add' if path in additions else 'keep',
+                        'sourceSha256': item['sha256']})
+    if additions:
+        merged.user_data.update({path: source.user_data[path] for path in additions})
+        inventory = [item for item in merged.manifest.get('dataInventory', []) if item.get('path') not in additions]
+        inventory.extend(item for item in source.manifest['dataInventory']
+                         if item['classification'] == 'portable' and item['path'] in additions)
+        merged.manifest['dataInventory'] = inventory
+        merged.manifest['schemaVersion'] = max(2, merged.manifest['schemaVersion'])
     old = {row['name']: row for row in merged.plugins_lock['plugins']}
     incoming = {row['name']: row for row in source.plugins_lock['plugins']}
     changes = []
@@ -94,7 +115,8 @@ def merge_packs(target: PackData, source: PackData, mode: str, command=None):
             config_changes.append({'path': name, 'action': 'add' if previous is None else 'merge',
                                    'beforeSha256': sha256_bytes(previous) if previous is not None else None,
                                    'afterSha256': sha256_bytes(files[name])})
-    files['package.json'] = json.dumps(package, ensure_ascii=False, indent=2).encode()
+    if mode != 'add' or package != target_pkg:
+        files['package.json'] = json.dumps(package, ensure_ascii=False, indent=2).encode()
     merged.profile_files = files
     merged.plugins_lock['plugins'] = list(old.values())
     if any(isinstance(row['bundle'].get('patch'), list) for row in old.values()):
@@ -103,7 +125,7 @@ def merge_packs(target: PackData, source: PackData, mode: str, command=None):
     used = {row['artifact']['path'].removeprefix('plugins/') for row in old.values() if row['artifact']['mode'] == 'embedded'}
     merged.plugin_artifacts = {name: value for name, value in merged.plugin_artifacts.items() if name in used}
     merged.manifest['requiredSecrets'] = sorted(set(target.manifest.get('requiredSecrets', [])) | set(source.manifest.get('requiredSecrets', [])))
-    return merged, {'mode': mode, 'plugins': changes, 'configuration': config_changes, 'snapshotRequired': True}
+    return merged, {'mode': mode, 'plugins': changes, 'configuration': config_changes, 'storage': storage, 'snapshotRequired': True}
 
 
 def _target(home, name):
@@ -150,18 +172,24 @@ def plan_incremental(source, home, name, mode, options, directory):
     import uuid
     target = _target(home, name)
     stage_name = 'crate-stage-' + uuid.uuid4().hex
-    if "modelApi" in read(source).manifest:
+    incoming = read(source)
+    if "modelApi" in incoming.manifest:
         raise PackImportError("Model API settings require a new Profile", stage="planning", code="MODEL_API_NEW_PROFILE_ONLY")
     from .model_api import project
     stripped, _, _ = project(target, ())
     if stripped is not None and stripped != (target / "cordis.patch.yml").read_bytes():
         raise PackImportError("Existing model settings must be preserved; use a new Profile", stage="planning", code="MODEL_API_TARGET_PROTECTED")
-    create_import_plan(source, home, options=replace(options, target_profile_name=stage_name, overwrite_existing_profile=False, overwrite_confirmation=None))
+    source_plan = create_import_plan(source, home, _keep_existing_storage=(mode == 'add'),
+                                     options=replace(options, target_profile_name=stage_name,
+                                                     overwrite_existing_profile=False, overwrite_confirmation=None))
     before = inventory(target)
     import platform
     environment = copy.deepcopy(dict(options.current_environment))
     environment['schemaVersion'] = 1
-    environment.setdefault('os', {}).setdefault('version', platform.release())
+    environment.setdefault('os', {}).setdefault('name', platform.system().lower())
+    environment['os'].setdefault('version', platform.release())
+    for section in ('dsh', 'node'):
+        environment.setdefault(section, {}).setdefault('version', 'unknown')
     environment['os'].setdefault('arch', platform.machine())
     from .errors import ExportError
     retirement = _retired_bundle_evidence(options)
@@ -175,7 +203,8 @@ def plan_incremental(source, home, name, mode, options, directory):
         raise PackImportError('无法准备现有环境的增量基线', stage='planning',
                               code='INCREMENTAL_BASELINE_FAILED', details={'originalError': error.as_dict()}) from error
     command = json.loads(os.environ['DSH_PACK_CONFIG_MERGE_COMMAND']) if os.environ.get('DSH_PACK_CONFIG_MERGE_COMMAND') else None
-    merged, preview = merge_packs(baseline, read(source), mode, command)
+    merged, preview = merge_packs(baseline, incoming, mode, command, storage_to_add=source_plan.portable_data)
+    del incoming
     if disabled_retired:
         preview['retiredBundles'] = [{'name': n, 'action': 'disable', 'artifact': 'retained',
                                      'reason': 'OFFICIAL_BUNDLE_RETIRED'} for n in disabled_retired]
@@ -216,7 +245,7 @@ def plan_incremental(source, home, name, mode, options, directory):
     if inventory(target) != before:
         raise PackImportError('目标环境已变化，请重新预览', stage='planning', code='TARGET_CHANGED')
     token = sha256_bytes(json.dumps({'target': str(target), 'files': before, 'source': sha256_bytes(Path(source).read_bytes()),
-                                   'mode': mode, 'environment': dict(options.current_environment),
+                                   'mode': mode, 'storage': preview['storage'], 'environment': dict(options.current_environment),
                                    'retirementEvidence': retirement,
                                    'hostRuntimeAdaptations': host_adaptations}, sort_keys=True).encode())
     preview.update(targetProfile=name, planToken=token, canContinue=True)
@@ -273,6 +302,10 @@ def execute_incremental(source, home, name, mode, options, token, directory):
     metadata_snapshot = Snapshot(Path(home), metadata)
     journal = snapshot.root / 'transaction.json'
     transaction = {'status': 'active', 'target': name, 'snapshots': [str(snapshot.root), str(metadata_snapshot.root)], 'maintenanceJob': os.environ.get('DSH_PACK_MAINTENANCE_JOB')}
+    storage = preview.get('storage', [])
+    additions = {row['path']: row['sourceSha256'] for row in storage if row['action'] == 'add'}
+    if additions:
+        transaction['sessionFiles'] = additions
     save_json(journal, transaction)
     try:
         compatibility_report = copy.deepcopy(options.compatibility_report)
@@ -281,7 +314,7 @@ def execute_incremental(source, home, name, mode, options, token, directory):
                 if row['name'] in preview.get('retainedRejectedPlugins', []):
                     row['retainedExisting'] = True
                     row['configurationPreserved'] = bool(preview.get('configurationPreserved'))
-        prepared = import_pack(path, home, options=replace(options, target_profile_name=stage_name,
+        prepared = import_pack(path, home, _portable_staging=snapshot.root / 'session-stage', options=replace(options, target_profile_name=stage_name,
                               overwrite_existing_profile=False, overwrite_confirmation=None,
                               compatibility_report=compatibility_report,
                               fallback_pack=Path(directory) / 'baseline.dshcrate' if options.allow_partial_plugins else None,
@@ -294,8 +327,14 @@ def execute_incremental(source, home, name, mode, options, token, directory):
         preserve_kept_plugins(target, prepared.profile_path, retained)
         if options.pnpm_command:
             relocate_pnpm_records(prepared.profile_path, target)
+        if storage:
+            from .portability import check_targets
+            missing = check_targets(Path(home).resolve(), [row['path'] for row in storage], keep_existing_storage=True)
+            if set(missing) != additions.keys():
+                raise PackImportError('目标存储在准备期间发生变化，请重新预览', stage='commit', code='TARGET_CHANGED')
         finalize_metadata(prepared.metadata_path, target)
         snapshot.commit(prepared.profile_path)
+        _publish_portable_files(home, journal, transaction)
         metadata_snapshot.commit(prepared.metadata_path)
         transaction['status'] = 'complete'
         save_json(journal, transaction)
@@ -303,7 +342,6 @@ def execute_incremental(source, home, name, mode, options, token, directory):
         result.update(profilePath=str(target), metadataPath=str(metadata), incremental=preview,
                       snapshot={'profile': str(snapshot.root), 'metadata': str(metadata_snapshot.root), 'status': 'retained'})
         result['plan'].update(profileName=name, profilePath=str(target), metadataPath=str(metadata))
-        return result
     except Exception as error:
         recovery = []
         for saved in [metadata_snapshot, snapshot]:
@@ -312,7 +350,10 @@ def execute_incremental(source, home, name, mode, options, token, directory):
             except Exception as failure:
                 recovery.append(str(failure))
         try:
+            _rollback_portable_files(home, journal, transaction)
             _cleanup_stage(home, transaction)
+            if not recovery:
+                _discard_portable_stage(journal, transaction)
         except Exception as failure:
             recovery.append(str(failure))
         transaction['status'] = 'recovery-failed' if recovery else 'restored'
@@ -321,6 +362,8 @@ def execute_incremental(source, home, name, mode, options, token, directory):
                               stage='rollback', code='IMPORT_ROLLED_BACK' if not recovery else 'ROLLBACK_FAILED',
                               details={'snapshot': str(snapshot.root), 'originalError': error.as_dict() if isinstance(error, PackImportError) else str(error),
                                        'rollback': 'PASS' if not recovery else 'FAIL', 'recoveryErrors': recovery}) from error
+    _finish_portable_stage(journal, transaction, result)
+    return result
 
 
 def recover_interrupted(home, name):
@@ -506,6 +549,14 @@ def _discard_portable_stage(journal, transaction):
         shutil.rmtree(stage)
 
 
+def _finish_portable_stage(journal, transaction, result):
+    try:
+        _discard_portable_stage(journal, transaction)
+    except OSError as error:
+        # 提交已持久化；下次获取目标锁时继续清理。
+        result.setdefault('warnings', []).append({'code': 'PORTABLE_STAGE_CLEANUP_PENDING', 'message': str(error)})
+
+
 def _protected_import(source, home, options):
     """新建/覆盖导入也先快照；含 Home 数据的包不能绕过快照覆盖范围。"""
     from .pack import read
@@ -566,9 +617,5 @@ def _protected_import(source, home, options):
                               code='IMPORT_ROLLED_BACK' if not failures else 'ROLLBACK_FAILED',
                               details={'snapshot': str(snapshot.root), 'originalError': error.as_dict() if isinstance(error, PackImportError) else str(error),
                                        'rollback': 'FAIL' if failures else 'PASS', 'recoveryErrors': failures}) from error
-    try:
-        _discard_portable_stage(journal, transaction)
-    except OSError as error:
-        # 提交已持久化；下次获取目标锁时继续清理。
-        result.setdefault('warnings', []).append({'code': 'PORTABLE_STAGE_CLEANUP_PENDING', 'message': str(error)})
+    _finish_portable_stage(journal, transaction, result)
     return result

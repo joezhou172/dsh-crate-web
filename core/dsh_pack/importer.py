@@ -533,6 +533,7 @@ def create_import_plan(
     dsh_home: str | os.PathLike[str],
     *,
     options: ImportOptions | None = None,
+    _keep_existing_storage: bool = False,
 ) -> ImportPlan:
     """Run Preflight and create a no-write Import Plan."""
 
@@ -568,7 +569,8 @@ def create_import_plan(
         raise PackImportError(str(error), stage="preflight", code="PACK_READ_ERROR") from error
 
     from .portability import check_targets
-    check_targets(home_path, data.user_data, overwrite=options.overwrite_existing_profile)
+    missing_data = check_targets(home_path, data.user_data, overwrite=options.overwrite_existing_profile,
+                                 keep_existing_storage=_keep_existing_storage)
     requested_profile_name = _profile_name(data.manifest)
     profile_name = _select_profile_name(
         home_path,
@@ -610,7 +612,7 @@ def create_import_plan(
             embedded_plugins=_plugin_rows(data.plugins_lock, "embedded"),
         reference_plugins=_plugin_rows(data.plugins_lock, "reference-only"),
         preflight=preflight,
-        portable_data=tuple(data.user_data),
+        portable_data=missing_data,
             host_provided_dependencies=tuple(host_dependencies),
     )
 

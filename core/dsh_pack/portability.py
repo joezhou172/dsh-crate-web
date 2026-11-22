@@ -10,7 +10,7 @@ import os
 import posixpath
 import re
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 from .errors import ExportError, PackImportError, SchemaValidationError
 from .validation import validate_archive_path
 
@@ -355,7 +355,9 @@ def validate_inventory(manifest: Mapping[str, Any], files: Mapping[str, bytes], 
         _validate_data(content, item)
 
 
-def check_targets(home: Path, files: Mapping[str, bytes], *, overwrite: bool = False) -> None:
+def check_targets(home: Path, files: Collection[str], *, overwrite: bool = False,
+                  keep_existing_storage: bool = False) -> tuple[str, ...]:
+    missing = []
     if files and overwrite:
         raise PackImportError("portable Home data requires a new Profile", stage="planning",
                               code="PORTABLE_DATA_OVERWRITE_FORBIDDEN")
@@ -364,12 +366,20 @@ def check_targets(home: Path, files: Mapping[str, bytes], *, overwrite: bool = F
             target = _inside(home, path)
         except ExportError as error:
             raise PackImportError(str(error), stage="planning", code="PORTABLE_DATA_PATH_UNSAFE") from error
+        if keep_existing_storage and portable_layout(path) == "storage":
+            if target.is_file():
+                continue
+            if target.exists() or (target.parent.exists() and not target.parent.is_dir()):
+                raise PackImportError("存储路径与目标目录结构冲突", stage="planning",
+                                      code="PORTABLE_DATA_PATH_UNSAFE", details={"item": path})
         if target.exists():
             raise PackImportError("portable data target already exists; use a fresh DSH_HOME",
                                   stage="planning", code="PORTABLE_DATA_EXISTS", details={
                                       "item": path,
                                       "suggestedNextStep": "请使用独立且全新的 DSH_HOME 恢复此包。会话和插件数据属于整个 Home；仅更换 Profile 名称无法避开现有数据。原 Home 不会被覆盖。",
                                   })
+        missing.append(path)
+    return tuple(missing)
 
 
 def restore_files(home: Path, files: Mapping[str, bytes], created: list[Path], directories: list[Path]) -> None:

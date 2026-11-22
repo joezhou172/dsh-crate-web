@@ -7,7 +7,7 @@ from test_size_preview import ENV, artifact, fixture
 from dsh_pack.errors import PackImportError
 from dsh_pack.export import ExportOptions, export_profile
 from dsh_pack.importer import ImportOptions
-from dsh_pack.incremental import merge_packs, protected_import
+from dsh_pack.incremental import execute_incremental, merge_packs, plan_incremental, protected_import
 from dsh_pack.pack import read
 from dsh_pack.snapshot import Snapshot
 from dsh_pack.user_cli import _invoke_core
@@ -36,21 +36,48 @@ class SnapshotStoragePreflightTests(unittest.TestCase):
         with patch("dsh_pack.export._npm_pack", side_effect=artifact):
             export_profile(profile, self.pack, options=options)
 
-    def test_storage_preflight_new_only(self):
+    def test_storage_preflight_and_unsupported_modes(self):
         for policy in ("strict", "compatible"):
             with self.subTest(policy=policy):
                 code, preview = _invoke_core(["inspect", str(self.pack), "--compatibility-policy", policy])
                 self.assertEqual(code, 0, preview)
                 self.assertTrue(preview["canContinue"])
         data = read(self.pack)
-        for mode in ("add", "update"):
-            with self.assertRaises(PackImportError) as raised:
-                merge_packs(data, data, mode)
-            self.assertEqual(raised.exception.code, "INCREMENTAL_HOME_DATA_UNSUPPORTED")
+        merged, preview = merge_packs(data, data, 'add')
+        self.assertEqual(merged.user_data, self.files)
+        self.assertTrue(all(row['action'] == 'add' for row in preview['storage']))
+        with self.assertRaises(PackImportError) as raised:
+            merge_packs(data, data, 'update')
+        self.assertEqual(raised.exception.code, 'INCREMENTAL_HOME_DATA_UNSUPPORTED')
         code, rejected = _invoke_core(["import", str(self.pack), "--overwrite", "--confirm-overwrite",
                                        "--target-profile", "moved", "--dsh-home", str(self.home), "--plan-only"])
         self.assertNotEqual(code, 0)
         self.assertEqual(rejected["error"]["code"], "PORTABLE_DATA_OVERWRITE_FORBIDDEN")
+
+    def test_incremental_mixed_storage_and_stale_plan(self):
+        from dataclasses import replace
+        profile = self.home / "profiles/moved"
+        import shutil
+        shutil.copytree(self.pack.parent / "home/profiles/sample", profile)
+        stored, appeared, missing = (self.home / path for path in self.files)
+        stored.parent.mkdir()
+        stored.write_bytes(b'{"local":true}\r\n')
+        options = replace(self.options, current_environment={"os": ENV["os"], "node": ENV["node"]})
+        with tempfile.TemporaryDirectory() as work, patch("dsh_pack.export._npm_pack", side_effect=artifact):
+            args = (self.pack, self.home, "moved", "add", options)
+            preview, _, _ = plan_incremental(*args, work)
+            appeared.write_bytes(b'{"concurrent":true}')
+            with self.assertRaises(PackImportError) as raised:
+                execute_incremental(*args, preview["planToken"], work)
+            self.assertEqual(raised.exception.code, "IMPORT_PLAN_CHANGED")
+            self.assertFalse(missing.exists())
+            preview, _, _ = plan_incremental(*args, work)
+            self.assertEqual({item["path"]: item["action"] for item in preview["storage"]},
+                             {path: ("add" if self.home / path == missing else "keep") for path in self.files})
+            execute_incremental(*args, preview["planToken"], work)
+        self.assertEqual(stored.read_bytes(), b'{"local":true}\r\n')
+        self.assertEqual(appeared.read_bytes(), b'{"concurrent":true}')
+        self.assertEqual(missing.read_bytes(), self.files[missing.relative_to(self.home).as_posix()])
 
     def test_post_commit_rollback_and_retry(self):
         metadata = self.home / ".dsh-pack/imports/moved"
