@@ -1,7 +1,7 @@
 {
   "name": "dsh-crate-web",
   "description": "DSH Web Settings surface for DSH Crate export, import, inspect, and history",
-  "version": "0.1.2-preview.26",
+  "version": "0.1.2-preview.27",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",

@@ -33,7 +33,7 @@ export function IncrementalImport({ file, target, mode, compatibilityPolicy, cho
     <button className="dsh-crate-secondary" disabled={busy || !file || !target} onClick={() => void preview()}>{t('incrementalPreview')}</button>
     {plan ? <>
       <ul>{(plan.plugins ?? []).map((row: Json) => <li key={row.name}>{row.name} · {t(row.action === 'keep' ? 'incrementalKeep' : row.action === 'add' ? 'incrementalAdd' : 'incrementalUpdate')}</li>)}</ul>
-      {plan.storage?.length > 0 ? <ul>{plan.storage.map((row: Json) => <li key={row.path}>{row.path} · {t(row.action === 'keep' ? 'incrementalKeep' : 'incrementalAdd')}</li>)}</ul> : null}
+      {plan.storage?.length > 0 ? <ul>{plan.storage.map((row: Json) => <li key={row.path}>{row.path} · {t(row.action === 'keep' ? 'incrementalKeep' : row.action === 'add' ? 'incrementalAdd' : 'incrementalUpdate')}</li>)}</ul> : null}
       {plan.retiredBundles?.length > 0 ? <ul role="status">{plan.retiredBundles.map((row: Json) => <li key={row.name}>{row.name} · {t('retiredBundleNotice')}</li>)}</ul> : null}
       {plan.hostRuntimeAdaptations?.length > 0 ? <ul role="status">{plan.hostRuntimeAdaptations.map((row: Json) => <li key={row.name}>{row.name} · {t('hostRuntimeNotice')} · {row.from ?? '—'} → {row.to}</li>)}</ul> : null}
       <span>{t('incrementalConfig')}: {plan.configuration?.length ?? 0}</span>

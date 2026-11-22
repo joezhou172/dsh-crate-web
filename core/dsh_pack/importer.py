@@ -1276,6 +1276,7 @@ def import_pack(
     *,
     options: ImportOptions | None = None,
     _portable_staging: Path | None = None,
+    _storage_update: bool = False,
 ) -> ImportResult:
     """Import one Pack as a prepared Profile with an explicit safe mode.
 
@@ -1314,14 +1315,15 @@ def import_pack(
         pack_data = None
     if pack_data is not None:
         options = _auto_reference_sources(pack_data, home_path, options)
-    plan = create_import_plan(source_path, home_path, options=options)
+    staged_update = _storage_update and _portable_staging is not None
+    plan = create_import_plan(source_path, home_path, options=options, _keep_existing_storage=staged_update)
     try:
         data = read(plan.pack_path)
     except DshPackError as error:
         raise PackImportError(str(error), stage="preflight", code="PACK_READ_ERROR") from error
 
     from .portability import check_targets, restore_files
-    check_targets(plan.dsh_home, data.user_data, overwrite=plan.overwrite)
+    check_targets(plan.dsh_home, data.user_data, overwrite=plan.overwrite, keep_existing_storage=staged_update)
     data_created: list[Path] = []
     data_directories: list[Path] = []
     profiles_root = plan.dsh_home / "profiles"
@@ -1519,7 +1521,7 @@ def import_pack(
                     raise
                 _cleanup(temp_profile)
                 temp_profile = None
-                return import_pack(source_path, home_path, _portable_staging=_portable_staging, options=replace(options,
+                return import_pack(source_path, home_path, _portable_staging=_portable_staging, _storage_update=_storage_update, options=replace(options,
                     unavailable_plugins={**options.unavailable_plugins, **rejected}))
         installed = [_verify_identity(temp_profile, plugin) for plugin in lock_plugins
                      if str(plugin["name"]) in installed_names]

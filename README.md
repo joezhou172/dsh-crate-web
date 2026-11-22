@@ -10,14 +10,14 @@
 
 ## 安装
 
-当前预览版：**`dsh-crate-web@0.1.2-preview.26`**。需要预览功能时请指定完整版本。
+当前预览版：**`dsh-crate-web@0.1.2-preview.27`**。需要预览功能时请指定完整版本。
 
 Desktop 用户在目标桌面窗口的插件管理中安装上述包，按提示重启后打开 **Settings → DSH Crate**，无需另外启动 Web 实例。
 
 命令行用户将下面的 `web` 替换为实际环境名：
 
 ```powershell
-dsh plugin --profile web add dsh-crate-web@0.1.2-preview.26
+dsh plugin --profile web add dsh-crate-web@0.1.2-preview.27
 ```
 
 全局 npm 安装不能替代安装到 DSH 环境。Windows x64 包包含 Python 运行时。请使用准确包名 `dsh-crate-web`；`dsh-crate` 是其他项目，不是本插件的替代安装名。
